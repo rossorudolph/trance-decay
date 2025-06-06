@@ -7,8 +7,8 @@ let poseDetectionStarted = false;
 
 // Audio system
 let audioInitialized = false;
-let ambientPad, bassLine, leadSynth, arpeggioSynth, twinkleSound;
-let brightnessFilter, motionFilter, palmFilter, masterReverb, masterDelay, masterDistortion;
+let ambientPad, bassLine, leadSynth, arpeggioSynth, counterMelody, twinkleSound, vocalChant;
+let brightnessFilter, motionFilter, palmFilter, masterReverb, masterDelay, masterDistortion, bitCrusher;
 let isPlaying = false;
 
 // Movement tracking
@@ -233,16 +233,53 @@ async function initializeAudio() {
     }
   }).connect(motionFilter);
   
-  // Create airy, energetic twinkle sound
+  // Create BitCrusher for glitchy twinkle effect
+  bitCrusher = new Tone.BitCrusher({
+    bits: 4, // Heavy distortion
+    wet: 0.8
+  }).connect(masterReverb);
+  
+  // Create airy, energetic twinkle sound with BitCrusher
   twinkleSound = new Tone.Synth({
     oscillator: {
-      type: "triangle" // More airy than sine
+      type: "triangle"
     },
     envelope: {
       attack: 0.001,
-      decay: 0.8,   // Longer decay for more energy
-      sustain: 0.3, // Higher sustain 
-      release: 2.0  // Longer release for airy tail
+      decay: 0.8,
+      sustain: 0.3,
+      release: 2.0
+    }
+  }).connect(bitCrusher);
+  
+  // Create soft counter-melody arpeggio (motion-controlled volume)
+  counterMelody = new Tone.Synth({
+    oscillator: {
+      type: "sine"
+    },
+    envelope: {
+      attack: 0.3,   // Soft attack
+      decay: 0.6,
+      sustain: 0.7,
+      release: 1.2   // Airy release
+    }
+  }).connect(palmFilter);
+  
+  // Create vocal chant sampler (you can add sample later)
+  vocalChant = new Tone.Synth({
+    oscillator: {
+      type: "sawtooth"
+    },
+    envelope: {
+      attack: 1.0,
+      decay: 0.1,
+      sustain: 0.9,
+      release: 2.0
+    },
+    filter: {
+      Q: 2,
+      frequency: 800,
+      type: "bandpass"
     }
   }).connect(masterReverb);
   
@@ -289,6 +326,32 @@ function startAmbientMusic() {
     }
   }, "16n");
   
+  // Soft counter-melody (8th notes - half speed, motion-controlled volume)
+  const counterMelodyPatterns = [
+    ["F4", "Ab4", "Bb4", "D5", "F5", "Ab5", "Bb5", "D6"], // Bb minor - floating above
+    ["C4", "Eb4", "F4", "Ab4", "C5", "Eb5", "F5", "Ab5"], // F minor - airy
+    ["Ab3", "C4", "Db4", "F4", "Ab4", "C5", "Db5", "F5"], // Db major - bright
+    ["Bb3", "D4", "Eb4", "G4", "Bb4", "D5", "Eb5", "G5"]  // Eb minor - ethereal
+  ];
+  
+  let counterMelodyIndex = 0;
+  Tone.getTransport().scheduleRepeat((time) => {
+    const currentCounterPattern = counterMelodyPatterns[currentChordIndex];
+    const note = currentCounterPattern[counterMelodyIndex % currentCounterPattern.length];
+    
+    // Volume controlled by motion amount (0.1 to 0.4 range)
+    const motionVolume = 0.1 + (motionAmountSmooth * 0.3);
+    
+    if (Math.random() > 0.3) { // More sparse than main arpeggio
+      counterMelody.triggerAttackRelease(note, "8n", time, motionVolume);
+    }
+    
+    counterMelodyIndex++;
+    if (counterMelodyIndex % 8 === 0) { // Reset every measure (8 eighth notes)
+      counterMelodyIndex = 0;
+    }
+  }, "8n");
+  
   // Glitchy lead (sparse, IDM-style)
   const leadMelody = ["Bb4", "D5", "F5", "Ab5", "C5", "Eb5"];
   let leadIndex = 0;
@@ -299,6 +362,17 @@ function startAmbientMusic() {
       leadIndex++;
     }
   }, "16n");
+  
+  // Vocal chant (very sparse, atmospheric)
+  const chantNotes = ["Bb2", "D3", "F3", "Ab3"];
+  let chantIndex = 0;
+  Tone.getTransport().scheduleRepeat((time) => {
+    if (Math.random() > 0.9) { // Very rare, atmospheric
+      const note = chantNotes[chantIndex % chantNotes.length];
+      vocalChant.triggerAttackRelease(note, "1m", time, 0.2);
+      chantIndex++;
+    }
+  }, "1m");
   
   Tone.getTransport().start();
 }
@@ -450,13 +524,13 @@ function updateAudioFilters() {
 function triggerTwinkle() {
   if (!audioInitialized || !twinkleSound) return;
   
-  // More energetic, higher notes for airy feeling
+  // Glitchy, punk distorted twinkles with BitCrusher
   const twinkleNotes = ["C7", "E7", "G7", "B7", "D7", "F#7", "A7", "C8"];
   const note = random(twinkleNotes);
   
-  // Higher volume and longer duration for more energy
-  twinkleSound.triggerAttackRelease(note, "4n", "+0", 0.5);
-  console.log("✨ Airy Twinkle!");
+  // Higher volume for punk energy
+  twinkleSound.triggerAttackRelease(note, "4n", "+0", 0.7);
+  console.log("⚡ Glitchy Punk Twinkle!");
 }
 
 // Visual system integration
@@ -512,34 +586,57 @@ function drawLissajousScale(spectrum, scale) {
 }
 
 function drawSpectralFlow(spectrum, scale) {
-  stroke(255, 180); // More visible
+  stroke(255, 180);
   strokeWeight(1.5 + scale * 0.01);
   noFill();
   
-  let segments = 8;
+  // More segments for finer, less anatomical patterns
+  let segments = 16; // Increased from 8
+  
   for (let seg = 0; seg < segments; seg++) {
     let startIdx = Math.floor((spectrum.length / segments) * seg);
     let endIdx = Math.floor((spectrum.length / segments) * (seg + 1));
     
+    // Subtle gesture influence on visual parameters
+    let gestureInfluence = (armStretchSmooth + motionAmountSmooth + Math.abs(handHeightSmooth)) / 3;
+    let rotationSpeed = 1 + gestureInfluence * 2; // Gesture affects rotation
+    let complexityMod = 1 + palmDirection * 0.3; // Palm direction affects complexity
+    
     beginShape();
     for (let i = startIdx; i < endIdx; i++) {
       let progress = map(i, startIdx, endIdx, 0, 1);
-      let intensity = (spectrum[i] + 100) / 100; // Convert from dB
+      let intensity = (spectrum[i] + 100) / 100;
       
-      let baseAngle = map(seg, 0, segments, 0, TWO_PI);
-      let flowAngle = baseAngle + progress * PI;
+      // More flowing, abstract pattern
+      let baseAngle = map(seg, 0, segments, 0, TWO_PI * rotationSpeed);
+      let flowAngle = baseAngle + progress * PI * complexityMod;
       
-      let radius = intensity * scale * 200; // Much larger
-      let x = cos(flowAngle) * radius;
-      let y = sin(flowAngle) * radius;
+      // Spiral outward with gesture influence
+      let radius = intensity * scale * (100 + gestureInfluence * 50);
+      let spiralFactor = progress * gestureInfluence * 0.5;
       
-      // Add harmonic distortion
-      x += cos(flowAngle * 3) * intensity * scale * 50;
-      y += sin(flowAngle * 3) * intensity * scale * 50;
+      let x = cos(flowAngle) * (radius + spiralFactor * 30);
+      let y = sin(flowAngle) * (radius + spiralFactor * 30);
+      
+      // Add organic variation with gesture modulation
+      let harmonicFreq = 3 + Math.floor(gestureInfluence * 4);
+      x += cos(flowAngle * harmonicFreq) * intensity * scale * (20 + gestureInfluence * 15);
+      y += sin(flowAngle * harmonicFreq) * intensity * scale * (20 + gestureInfluence * 15);
       
       vertex(x, y);
     }
     endShape();
+    
+    // Add connecting lines between segments for continuity
+    if (seg < segments - 1) {
+      stroke(255, 60);
+      strokeWeight(0.5);
+      // Draw subtle connecting lines
+      let angle1 = map(seg, 0, segments, 0, TWO_PI);
+      let angle2 = map(seg + 1, 0, segments, 0, TWO_PI);
+      let r = scale * 50;
+      line(cos(angle1) * r, sin(angle1) * r, cos(angle2) * r, sin(angle2) * r);
+    }
   }
 }
 
@@ -553,7 +650,7 @@ function drawGestureMeters() {
   
   fill(0, 0, 0, 150);
   noStroke();
-  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 4 + 10);
+  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 5 + 10); // Taller for 5 meters
   
   // Arm Stretch Meter
   fill(50);
@@ -562,16 +659,16 @@ function drawGestureMeters() {
   rect(meterX, meterY, meterWidth * armStretchSmooth, meterHeight);
   fill(255);
   textSize(11);
-  text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}%`, meterX, meterY - 3);
+  text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness`, meterX, meterY - 3);
   
-  // Motion Amount Meter
+  // Motion Amount Meter (now shows counter-melody influence)
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
   fill(100, 255, 100);
   rect(meterX, meterY, meterWidth * motionAmountSmooth, meterHeight);
   fill(255);
-  text(`Motion: ${(motionAmountSmooth * 100).toFixed(0)}%`, meterX, meterY - 3);
+  text(`Motion: ${(motionAmountSmooth * 100).toFixed(0)}% → Counter-Melody Vol`, meterX, meterY - 3);
   
   // Hand Height Meter
   meterY += spacing;
@@ -581,7 +678,7 @@ function drawGestureMeters() {
   fill(100, 100, 255);
   rect(meterX, meterY, meterWidth * handHeightDisplay, meterHeight);
   fill(255);
-  text(`Hand Height: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} (${handHeightSmooth.toFixed(2)})`, meterX, meterY - 3);
+  text(`Hand Height: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} → Glitch Twinkle`, meterX, meterY - 3);
   
   // Palm Direction Meter
   meterY += spacing;
@@ -591,7 +688,17 @@ function drawGestureMeters() {
   fill(255, 255, 100);
   rect(meterX, meterY, meterWidth * palmDisplay, meterHeight);
   fill(255);
-  text(`Palm Direction: ${palmDirection > 0 ? 'UP' : 'DOWN'} (${palmDirection.toFixed(2)})`, meterX, meterY - 3);
+  text(`Palm Direction: ${palmDirection > 0 ? 'UP' : 'DOWN'} → High-Pass Filter`, meterX, meterY - 3);
+  
+  // Counter-Melody Volume Display
+  meterY += spacing;
+  let counterVolume = 0.1 + (motionAmountSmooth * 0.3);
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  fill(255, 150, 255);
+  rect(meterX, meterY, meterWidth * (counterVolume / 0.4), meterHeight); // Scale to max 0.4
+  fill(255);
+  text(`Counter-Melody: ${(counterVolume * 100).toFixed(0)}% volume`, meterX, meterY - 3);
 }
 
 function draw() {
