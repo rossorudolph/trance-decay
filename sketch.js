@@ -8,19 +8,35 @@ let poseDetectionStarted = false;
 // Audio system
 let audioInitialized = false;
 let ambientPad, bassLine, leadSynth, arpeggioSynth, counterMelody, twinkleSound, vocalChant;
+let vocalSampler; // NEW: For vocal sample
 let brightnessFilter, motionFilter, palmFilter, masterReverb, masterDelay, masterDistortion, bitCrusher;
+// Motion-controlled hihat rhythm
+let motionHihat;
 let isPlaying = false;
 
-// Movement tracking
+// NEW: Breakcore system
+let breakcoreKick, breakcoreSnare, breakcoreHihat;
+let isBreakcoreActive = false;
+let breakcoreStartTime = 0;
+let breakCoreDuration = 4000; // 4 seconds
+
+// Movement tracking with improved decay
 let previousPoses = [];
 let armStretch = 0;
 let motionAmount = 0;
+let motionAmountRaw = 0; // New: raw motion before smoothing
 let armStretchSmooth = 0;
 let motionAmountSmooth = 0;
+let motionDecayRate = 0.02; // New: slower decay rate
 let handHeight = 0;
 let handHeightSmooth = 0;
-let palmDirection = 0; // -1 = down, 1 = up
+let palmDirection = 0;
 let lastTwinkleTime = 0;
+
+// NEW: Jump detection
+let jumpAmount = 0;
+let jumpThreshold = 0.3; // LOWERED from 0.8
+let lastJumpTime = 0;
 
 // Audio parameters
 let brightnessFreq = 400;
@@ -29,11 +45,11 @@ let palmFreq = 800;
 
 // Visual system
 let audioAnalyzer;
-let visualMode = 1; // Start with Spectral Flow (index 1)
+let visualMode = 1; // Start with Spectral Flow
 let visualModes = ['Lissajous Scale', 'Spectral Flow'];
-let bodyCenter = {x: 640, y: 480}; // Updated for larger canvas
+let bodyCenter = {x: 640, y: 480};
 
-// IDM-style chord progression (more complex, minor-heavy)
+// IMPROVED: More structured chord progression
 const chordProgression = [
   ["Bb2", "D3", "F3", "Ab3"],   // Bb minor 7
   ["F2", "Ab2", "C3", "Eb3"],   // F minor 7
@@ -42,26 +58,36 @@ const chordProgression = [
 ];
 
 const bassNotes = ["Bb1", "F1", "Db1", "Eb1"];
+// NEW: Add octave higher for less muddy bass
+const bassNotesHigh = ["Bb2", "F2", "Db2", "Eb2"];
 let currentChordIndex = 0;
 
-// IDM-style arpeggio patterns (more interesting, broken chord patterns)
+// IMPROVED: Much more structured arpeggio patterns - clear melodies that repeat
 const arpeggioPatterns = [
-  // Bb minor 7 - broken chord with intervals
-  ["Bb3", "F4", "D4", "Ab4", "Bb4", "D4", "F4", "Ab3", "D4", "F4", "Bb3", "Ab4", "F4", "D4", "Bb4", "Ab3"],
-  // F minor 7 - syncopated with gaps
-  ["F3", "Ab4", "C4", "Eb4", "F4", "C4", "Ab3", "Eb4", "C4", "F4", "Ab4", "F3", "Eb4", "C4", "F3", "Ab4"],
-  // Db major 7 - flowing with larger intervals
-  ["Db4", "F5", "Ab4", "C5", "Db5", "Ab4", "F4", "C5", "Ab4", "Db4", "F5", "C4", "Ab4", "Db5", "F4", "C5"],
-  // Eb minor 7 - glitchy with repetitions
-  ["Eb3", "Bb4", "Bb3", "G4", "D4", "Eb4", "G4", "Bb3", "D4", "G4", "Eb3", "Bb4", "G4", "D4", "Eb4", "Bb3"]
+  // Bb minor 7 - ascending then descending melody
+  ["Bb3", "D4", "F4", "Ab4", "Bb4", "Ab4", "F4", "D4", "Bb3", "D4", "F4", "Ab4", "Bb4", "Ab4", "F4", "D4"],
+  // F minor 7 - wave pattern
+  ["F3", "Ab3", "C4", "Eb4", "F4", "Eb4", "C4", "Ab3", "F3", "Ab3", "C4", "Eb4", "F4", "Eb4", "C4", "Ab3"],
+  // Db major 7 - arching melody
+  ["Db4", "F4", "Ab4", "C5", "F5", "C5", "Ab4", "F4", "Db4", "F4", "Ab4", "C5", "F5", "C5", "Ab4", "F4"],
+  // Eb minor 7 - cascading pattern
+  ["Eb4", "G4", "Bb4", "D5", "Eb5", "D5", "Bb4", "G4", "Eb4", "G4", "Bb4", "D5", "Eb5", "D5", "Bb4", "G4"]
+];
+
+// NEW: Percussive stab notes for motion-controlled rhythm
+const percussiveStabNotes = [
+  ["Bb3", "D4", "F4", "Ab4"], // Bb minor chord stabs
+  ["F3", "Ab3", "C4", "Eb4"], // F minor chord stabs  
+  ["Db4", "F4", "Ab4", "C5"], // Db major chord stabs
+  ["Eb3", "G3", "Bb3", "D4"]  // Eb minor chord stabs
 ];
 
 function setup() {
-  createCanvas(1280, 960); // Double the size
+  createCanvas(1280, 960);
   
   console.log('Setting up video...');
   video = createCapture(VIDEO, videoReady);
-  video.size(1280, 960); // Match canvas size
+  video.size(1280, 960);
   video.hide();
   
   console.log('Creating bodyPose...');
@@ -72,7 +98,8 @@ function setup() {
   }
   
   console.log("Click to start/stop ambient techno music");
-  console.log("Stretch arms = brighter sound | Move = resonance | Raise hands = twinkle | Palm direction = filter sweep");
+  console.log("Stretch arms = brighter sound | Move = percussive stabs | Raise hands = vocal chant | Small jump = breakcore | Wide hands = hihat");
+  console.log("To add vocal sample: Uncomment vocalSampler code and add vocal file path");
 }
 
 function modelReady() {
@@ -119,16 +146,13 @@ async function initializeAudio() {
   if (audioInitialized) return;
   
   await Tone.start();
-  console.log("Initializing IDM audio system...");
+  console.log("Initializing enhanced IDM audio system...");
   
-  // Create master gain for audio analysis
   let masterGain = new Tone.Gain(1).toDestination();
-  
-  // Create audio analyzer connected to master output
   audioAnalyzer = new Tone.Analyser('fft', 512);
   masterGain.connect(audioAnalyzer);
   
-  // Create master effects chain
+  // Master effects chain
   masterDistortion = new Tone.Distortion({
     distortion: 0.1,
     wet: 0.2
@@ -146,12 +170,11 @@ async function initializeAudio() {
     wet: 0.2
   });
   
-  // Connect effects chain to master gain (so analyzer gets the final output)
   masterDistortion.connect(masterDelay);
   masterDelay.connect(masterReverb);
   masterReverb.connect(masterGain);
   
-  // BRIGHTNESS FILTER - controlled by arm stretch
+  // Filter chain
   brightnessFilter = new Tone.Filter({
     frequency: 400,
     type: "lowpass",
@@ -159,7 +182,6 @@ async function initializeAudio() {
     Q: 2
   }).connect(masterDistortion);
   
-  // MOTION FILTER - controlled by movement
   motionFilter = new Tone.Filter({
     frequency: 800,
     type: "bandpass",
@@ -167,7 +189,6 @@ async function initializeAudio() {
     Q: 1
   }).connect(brightnessFilter);
   
-  // PALM FILTER - controlled by palm direction
   palmFilter = new Tone.Filter({
     frequency: 1200,
     type: "highpass",
@@ -175,7 +196,7 @@ async function initializeAudio() {
     Q: 3
   }).connect(motionFilter);
   
-  // Create IDM-style ambient pad
+  // Ambient pad
   ambientPad = new Tone.PolySynth({
     oscillator: {
       type: "sawtooth",
@@ -189,25 +210,25 @@ async function initializeAudio() {
     }
   }).connect(palmFilter);
   
-  // Create punchy bass - drier and warmer
+  // IMPROVED: Warmer, punchier bass
   bassLine = new Tone.MonoSynth({
     oscillator: {
-      type: "triangle" // Warmer than square wave
+      type: "triangle"
     },
     envelope: {
       attack: 0.02,
       decay: 0.1,
-      sustain: 0.9, // High sustain for longer holds
-      release: 0.5  // Shorter release for drier sound
+      sustain: 0.9,
+      release: 0.3  // SHORTER release for half duration
     },
     filter: {
-      Q: 4, // Less resonant
-      frequency: 150, // Higher cutoff for less muffled sound
+      Q: 4,
+      frequency: 150,
       type: "lowpass"
     }
-  }).connect(brightnessFilter); // Skip motion and palm filters for drier sound
+  }).connect(brightnessFilter);
   
-  // Create glitchy lead
+  // Lead synth
   leadSynth = new Tone.Synth({
     oscillator: {
       type: "triangle"
@@ -220,7 +241,7 @@ async function initializeAudio() {
     }
   }).connect(palmFilter);
   
-  // Create fast arpeggio synth
+  // Main arpeggio synth
   arpeggioSynth = new Tone.Synth({
     oscillator: {
       type: "sine"
@@ -233,39 +254,78 @@ async function initializeAudio() {
     }
   }).connect(motionFilter);
   
-  // Create BitCrusher for glitchy twinkle effect
-  bitCrusher = new Tone.BitCrusher({
-    bits: 4, // Heavy distortion
-    wet: 0.8
-  }).connect(masterReverb);
-  
-  // Create airy, energetic twinkle sound with BitCrusher
-  twinkleSound = new Tone.Synth({
-    oscillator: {
-      type: "triangle"
-    },
-    envelope: {
-      attack: 0.001,
-      decay: 0.8,
-      sustain: 0.3,
-      release: 2.0
-    }
-  }).connect(bitCrusher);
-  
-  // Create soft counter-melody arpeggio (motion-controlled volume)
-  counterMelody = new Tone.Synth({
+  // COMPLETELY RETHOUGHT: Motion-controlled percussive stabs instead of melody
+  counterMelody = new Tone.FMSynth({
+    harmonicity: 3,
+    modulationIndex: 10,
     oscillator: {
       type: "sine"
     },
     envelope: {
-      attack: 0.3,   // Soft attack
-      decay: 0.6,
-      sustain: 0.7,
-      release: 1.2   // Airy release
+      attack: 0.01,
+      decay: 0.1,
+      sustain: 0.1,
+      release: 0.1
+    },
+    modulation: {
+      type: "square"
+    },
+    modulationEnvelope: {
+      attack: 0.01,
+      decay: 0.1,
+      sustain: 0,
+      release: 0.1
     }
   }).connect(palmFilter);
   
-  // Create vocal chant sampler (you can add sample later)
+  // NEW: Cleaner motion-controlled hihat
+  motionHihat = new Tone.Synth({
+    oscillator: {
+      type: "sine"
+    },
+    envelope: {
+      attack: 0.001,
+      decay: 0.05,
+      sustain: 0,
+      release: 0.05
+    },
+    filter: {
+      Q: 20,
+      frequency: 8000,
+      type: "highpass"
+    }
+  }).connect(motionFilter);
+  
+  // RETHOUGHT: Vocal "ahhh" chant sound that complements the music
+  twinkleSound = new Tone.Synth({
+    oscillator: {
+      type: "sawtooth"
+    },
+    envelope: {
+      attack: 0.3,    // Slow attack for vocal quality
+      decay: 0.8,     
+      sustain: 0.6,   
+      release: 1.5    // Long release for "ahhh" trail
+    },
+    filter: {
+      Q: 4,
+      frequency: 600, // Vocal formant frequency
+      type: "bandpass"
+    }
+  }).connect(masterReverb);
+  
+  // NEW: Vocal sampler (you can load a vocal sample file here)
+  // To use: place a vocal sample file in your project and uncomment below
+  /*
+  vocalSampler = new Tone.Sampler({
+    urls: {
+      "C4": "path/to/your/vocal-sample.wav" // Replace with your vocal sample path
+    },
+    volume: -6
+  }).connect(masterReverb);
+  */
+  
+  // Vocal chant
   vocalChant = new Tone.Synth({
     oscillator: {
       type: "sawtooth"
@@ -283,91 +343,123 @@ async function initializeAudio() {
     }
   }).connect(masterReverb);
   
-  Tone.getTransport().bpm.value = 125; // Faster IDM tempo
+  // NEW: Breakcore drum sounds
+  breakcoreKick = new Tone.MembraneSynth({
+    pitchDecay: 0.05,
+    octaves: 10,
+    oscillator: {type: "sine"},
+    envelope: {attack: 0.001, decay: 0.4, sustain: 0.01, release: 1.4}
+  }).connect(masterDistortion);
+  
+  breakcoreSnare = new Tone.NoiseSynth({
+    noise: {type: "white"},
+    envelope: {attack: 0.005, decay: 0.1, sustain: 0}
+  }).connect(masterDistortion);
+  
+  breakcoreHihat = new Tone.NoiseSynth({
+    noise: {type: "white"},
+    envelope: {attack: 0.005, decay: 0.05, sustain: 0}
+  }).connect(masterDistortion);
+  
+  Tone.getTransport().bpm.value = 125;
   audioInitialized = true;
-  console.log("✓ IDM audio system ready");
+  console.log("✓ Enhanced IDM audio system ready");
 }
 
 function startAmbientMusic() {
   if (isPlaying) return;
   isPlaying = true;
   
-  console.log("Starting IDM ambient music...");
+  console.log("Starting enhanced IDM ambient music...");
   if (window.updateStatus) window.updateStatus("Playing");
   
-  // Ambient pad chords (slower)
+  // Ambient pad chords (unchanged)
   Tone.getTransport().scheduleRepeat((time) => {
     const currentChord = chordProgression[currentChordIndex];
     ambientPad.triggerAttackRelease(currentChord, "2m", time, 0.3);
     currentChordIndex = (currentChordIndex + 1) % chordProgression.length;
   }, "2m");
   
-  // Bass line - ONE note per 2 measures, aligned with chord changes
+  // IMPROVED: Bass line with higher octave - less muddy
   let bassChordIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
     const bassNote = bassNotes[bassChordIndex % bassNotes.length];
-    bassLine.triggerAttackRelease(bassNote, "2m", time, 0.8); // 2 measure duration, higher volume
+    const bassNoteHigh = bassNotesHigh[bassChordIndex % bassNotesHigh.length];
+    
+    // Play both low and high bass notes
+    bassLine.triggerAttackRelease(bassNote, "1m", time, 0.6); // Lower volume for low
+    bassLine.triggerAttackRelease(bassNoteHigh, "1m", time, 0.4); // Higher octave
+    
     bassChordIndex = (bassChordIndex + 1) % bassNotes.length;
-  }, "2m"); // Every 2 measures, same as chord changes
+  }, "1m");
   
-  // Fast arpeggios (16th notes for energy) - more interesting patterns
+  // IMPROVED: More structured arpeggios - repeating patterns
   let arpeggioNoteIndex = 0;
+  let arpeggioPatternIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    const currentPattern = arpeggioPatterns[currentChordIndex];
+    const currentPattern = arpeggioPatterns[arpeggioPatternIndex];
     const note = currentPattern[arpeggioNoteIndex % currentPattern.length];
     
-    if (Math.random() > 0.15) { // High probability but some gaps for breathing
+    // IMPROVED: More consistent playback, less random
+    if (Math.random() > 0.05) { // 95% chance instead of 85%
       arpeggioSynth.triggerAttackRelease(note, "16n", time, 0.4);
     }
     
     arpeggioNoteIndex++;
-    if (arpeggioNoteIndex % 16 === 0) { // Reset every measure (16 sixteenth notes)
+    if (arpeggioNoteIndex % 16 === 0) { // Every measure
       arpeggioNoteIndex = 0;
+      // Change pattern every 4 measures to follow chord changes
+      if (arpeggioNoteIndex % 64 === 0) {
+        arpeggioPatternIndex = (arpeggioPatternIndex + 1) % arpeggioPatterns.length;
+      }
     }
   }, "16n");
   
-  // Soft counter-melody (8th notes - half speed, motion-controlled volume)
-  const counterMelodyPatterns = [
-    ["F4", "Ab4", "Bb4", "D5", "F5", "Ab5", "Bb5", "D6"], // Bb minor - floating above
-    ["C4", "Eb4", "F4", "Ab4", "C5", "Eb5", "F5", "Ab5"], // F minor - airy
-    ["Ab3", "C4", "Db4", "F4", "Ab4", "C5", "Db5", "F5"], // Db major - bright
-    ["Bb3", "D4", "Eb4", "G4", "Bb4", "D5", "Eb5", "G5"]  // Eb minor - ethereal
-  ];
-  
-  let counterMelodyIndex = 0;
+  // RETHOUGHT: Motion-controlled percussive stabs (not melody)
+  let percussiveIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    const currentCounterPattern = counterMelodyPatterns[currentChordIndex];
-    const note = currentCounterPattern[counterMelodyIndex % currentCounterPattern.length];
+    const currentStabChord = percussiveStabNotes[currentChordIndex];
     
-    // Volume controlled by motion amount (0.1 to 0.4 range)
-    const motionVolume = 0.1 + (motionAmountSmooth * 0.3);
+    // IMPROVED: Better motion-responsive volume and timing
+    const motionVolume = 0.1 + (motionAmountSmooth * 0.6);
     
-    if (Math.random() > 0.3) { // More sparse than main arpeggio
-      counterMelody.triggerAttackRelease(note, "8n", time, motionVolume);
+    // Play percussive stabs when there's motion - more rhythmic
+    if (motionAmountSmooth > 0.1 && Math.random() > 0.4) { // Lower threshold since motion detection is more accurate
+      // Play multiple notes from chord for fuller stabs
+      currentStabChord.forEach((note, index) => {
+        counterMelody.triggerAttackRelease(note, "16n", time + (index * 0.01), motionVolume);
+      });
     }
     
-    counterMelodyIndex++;
-    if (counterMelodyIndex % 8 === 0) { // Reset every measure (8 eighth notes)
-      counterMelodyIndex = 0;
-    }
-  }, "8n");
+    percussiveIndex++;
+  }, "4n"); // Quarter note rhythm for more rhythmic feel
   
-  // Glitchy lead (sparse, IDM-style)
+  // NEW: Palm-controlled hihat rhythm (cleaner sound)
+  Tone.getTransport().scheduleRepeat((time) => {
+    // Volume controlled by palm direction (hand width)
+    const hihatVolume = palmDirection * 0.4; // 0 to 0.4 volume range
+    
+    if (hihatVolume > 0.05) { // Only play when hands are spread
+      motionHihat.triggerAttackRelease("C6", "32n", time, hihatVolume);
+    }
+  }, "8n"); // 8th note hihat rhythm
+  
+  // Glitchy lead (unchanged)
   const leadMelody = ["Bb4", "D5", "F5", "Ab5", "C5", "Eb5"];
   let leadIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    if (Math.random() > 0.7) { // Sparse, glitchy
+    if (Math.random() > 0.7) {
       const note = leadMelody[leadIndex % leadMelody.length];
       leadSynth.triggerAttackRelease(note, "32n", time, 0.3);
       leadIndex++;
     }
   }, "16n");
   
-  // Vocal chant (very sparse, atmospheric)
+  // Vocal chant (unchanged)
   const chantNotes = ["Bb2", "D3", "F3", "Ab3"];
   let chantIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    if (Math.random() > 0.9) { // Very rare, atmospheric
+    if (Math.random() > 0.9) {
       const note = chantNotes[chantIndex % chantNotes.length];
       vocalChant.triggerAttackRelease(note, "1m", time, 0.2);
       chantIndex++;
@@ -375,6 +467,108 @@ function startAmbientMusic() {
   }, "1m");
   
   Tone.getTransport().start();
+}
+
+// NEW: Much more chaotic breakcore beat function
+function startBreakcore() {
+  if (isBreakcoreActive) return;
+  
+  isBreakcoreActive = true;
+  breakcoreStartTime = millis();
+  
+  console.log("🔥 CHAOTIC BREAKCORE ACTIVATED!");
+  
+  // MUCH MORE CHAOTIC breakcore pattern - rapid fire
+  const chaoticPattern = [
+    // Rapid fire section 1
+    {time: "0:0:0", sound: "kick", velocity: 0.9},
+    {time: "0:0:1", sound: "snare", velocity: 0.8},
+    {time: "0:0:1.5", sound: "hihat", velocity: 0.6},
+    {time: "0:0:2", sound: "kick", velocity: 0.7},
+    {time: "0:0:2.5", sound: "snare", velocity: 0.9},
+    {time: "0:0:3", sound: "hihat", velocity: 0.5},
+    {time: "0:0:3.5", sound: "kick", velocity: 0.8},
+    
+    {time: "0:1:0", sound: "snare", velocity: 0.9},
+    {time: "0:1:0.5", sound: "hihat", velocity: 0.4},
+    {time: "0:1:1", sound: "kick", velocity: 0.8},
+    {time: "0:1:1.5", sound: "snare", velocity: 0.7},
+    {time: "0:1:2", sound: "hihat", velocity: 0.6},
+    {time: "0:1:2.5", sound: "kick", velocity: 0.9},
+    {time: "0:1:3", sound: "snare", velocity: 0.8},
+    {time: "0:1:3.5", sound: "hihat", velocity: 0.5},
+    
+    // Even more chaotic section
+    {time: "0:2:0", sound: "kick", velocity: 0.9},
+    {time: "0:2:0.25", sound: "hihat", velocity: 0.4},
+    {time: "0:2:0.5", sound: "snare", velocity: 0.8},
+    {time: "0:2:0.75", sound: "kick", velocity: 0.7},
+    {time: "0:2:1", sound: "hihat", velocity: 0.5},
+    {time: "0:2:1.25", sound: "snare", velocity: 0.9},
+    {time: "0:2:1.5", sound: "kick", velocity: 0.8},
+    {time: "0:2:1.75", sound: "hihat", velocity: 0.6},
+    {time: "0:2:2", sound: "snare", velocity: 0.9},
+    {time: "0:2:2.25", sound: "kick", velocity: 0.8},
+    {time: "0:2:2.5", sound: "hihat", velocity: 0.4},
+    {time: "0:2:2.75", sound: "snare", velocity: 0.7},
+    {time: "0:2:3", sound: "kick", velocity: 0.9},
+    {time: "0:2:3.25", sound: "hihat", velocity: 0.5},
+    {time: "0:2:3.5", sound: "snare", velocity: 0.8},
+    {time: "0:2:3.75", sound: "kick", velocity: 0.7},
+    
+    // Frantic finale
+    {time: "0:3:0", sound: "kick", velocity: 0.9},
+    {time: "0:3:0.125", sound: "hihat", velocity: 0.3},
+    {time: "0:3:0.25", sound: "snare", velocity: 0.8},
+    {time: "0:3:0.375", sound: "hihat", velocity: 0.4},
+    {time: "0:3:0.5", sound: "kick", velocity: 0.8},
+    {time: "0:3:0.625", sound: "snare", velocity: 0.9},
+    {time: "0:3:0.75", sound: "hihat", velocity: 0.5},
+    {time: "0:3:0.875", sound: "kick", velocity: 0.7},
+    {time: "0:3:1", sound: "snare", velocity: 0.9},
+    {time: "0:3:1.125", sound: "hihat", velocity: 0.4},
+    {time: "0:3:1.25", sound: "kick", velocity: 0.8},
+    {time: "0:3:1.375", sound: "snare", velocity: 0.8},
+    {time: "0:3:1.5", sound: "hihat", velocity: 0.6},
+    {time: "0:3:1.625", sound: "kick", velocity: 0.9},
+    {time: "0:3:1.75", sound: "snare", velocity: 0.8},
+    {time: "0:3:1.875", sound: "hihat", velocity: 0.5},
+    {time: "0:3:2", sound: "kick", velocity: 0.9},
+    {time: "0:3:2.125", sound: "snare", velocity: 0.8},
+    {time: "0:3:2.25", sound: "hihat", velocity: 0.4},
+    {time: "0:3:2.375", sound: "kick", velocity: 0.7},
+    {time: "0:3:2.5", sound: "snare", velocity: 0.9},
+    {time: "0:3:2.625", sound: "hihat", velocity: 0.5},
+    {time: "0:3:2.75", sound: "kick", velocity: 0.8},
+    {time: "0:3:2.875", sound: "snare", velocity: 0.8},
+    {time: "0:3:3", sound: "kick", velocity: 0.9},
+    {time: "0:3:3.125", sound: "hihat", velocity: 0.6},
+    {time: "0:3:3.25", sound: "snare", velocity: 0.9},
+    {time: "0:3:3.375", sound: "kick", velocity: 0.8},
+    {time: "0:3:3.5", sound: "hihat", velocity: 0.4},
+    {time: "0:3:3.625", sound: "snare", velocity: 0.8},
+    {time: "0:3:3.75", sound: "kick", velocity: 0.9},
+    {time: "0:3:3.875", sound: "hihat", velocity: 0.5}
+  ];
+  
+  // Schedule all chaotic breakcore hits
+  chaoticPattern.forEach(hit => {
+    Tone.getTransport().schedule((time) => {
+      if (hit.sound === "kick") {
+        breakcoreKick.triggerAttackRelease("C1", "32n", time, hit.velocity);
+      } else if (hit.sound === "snare") {
+        breakcoreSnare.triggerAttackRelease("32n", time, hit.velocity);
+      } else if (hit.sound === "hihat") {
+        breakcoreHihat.triggerAttackRelease("64n", time, hit.velocity);
+      }
+    }, `+${hit.time}`);
+  });
+  
+  // Stop breakcore after duration
+  setTimeout(() => {
+    isBreakcoreActive = false;
+    console.log("Chaotic breakcore ended");
+  }, breakCoreDuration);
 }
 
 function stopMusic() {
@@ -385,11 +579,31 @@ function stopMusic() {
     Tone.getTransport().stop();
     Tone.getTransport().cancel();
     if (ambientPad) ambientPad.releaseAll();
+    isBreakcoreActive = false;
     console.log('Music stopped');
     if (window.updateStatus) window.updateStatus("Stopped");
   } catch (error) {
     console.error('Error stopping music:', error);
   }
+}
+
+// NEW: Jump detection function
+function calculateJumpAmount(pose) {
+  const leftAnkle = pose.keypoints[27];
+  const rightAnkle = pose.keypoints[28];
+  const nose = pose.keypoints[0];
+  
+  if (leftAnkle && rightAnkle && nose &&
+      leftAnkle.confidence > 0.5 && rightAnkle.confidence > 0.5 && nose.confidence > 0.5) {
+    
+    const avgAnkleY = (leftAnkle.y + rightAnkle.y) / 2;
+    const expectedGroundLevel = height * 0.9; // Assume ground is near bottom
+    const jumpHeight = expectedGroundLevel - avgAnkleY;
+    
+    return constrain(jumpHeight / 200, 0, 2); // Normalize jump height
+  }
+  
+  return 0;
 }
 
 function calculateArmStretch(pose) {
@@ -404,13 +618,12 @@ function calculateArmStretch(pose) {
     
     const centerX = (leftShoulder.x + rightShoulder.x) / 2;
     const centerY = (leftShoulder.y + rightShoulder.y) / 2;
-    bodyCenter = {x: centerX, y: centerY}; // Update body center for visuals
+    bodyCenter = {x: centerX, y: centerY};
     
     const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
     const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
     const avgDistance = (leftDistance + rightDistance) / 2;
     
-    // Adjusted for larger canvas - shoulder width will be larger
     const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
     const normalizedDistance = avgDistance / (shoulderWidth * 1.8);
     
@@ -429,31 +642,35 @@ function calculateHandHeight(pose) {
       leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5 && nose.confidence > 0.5) {
     
     const avgWristY = (leftWrist.y + rightWrist.y) / 2;
-    const handHeightRaw = nose.y - avgWristY; // Positive when hands above head
+    const handHeightRaw = nose.y - avgWristY;
     
-    // Adjusted for larger canvas - scale the threshold
-    return constrain(handHeightRaw / 400, -1, 1); // Larger threshold for bigger canvas
+    return constrain(handHeightRaw / 400, -1, 1);
   }
   
   return handHeight;
 }
 
 function calculatePalmDirection(pose) {
-  // Simplified palm direction using wrist angle relative to elbow
-  const leftElbow = pose.keypoints[13];
-  const rightElbow = pose.keypoints[14];
+  // IMPROVED: Measure actual width between hands, normalized
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
   const leftWrist = pose.keypoints[15];
   const rightWrist = pose.keypoints[16];
   
-  if (leftElbow && rightElbow && leftWrist && rightWrist &&
-      leftElbow.confidence > 0.5 && rightElbow.confidence > 0.5 &&
+  if (leftShoulder && rightShoulder && leftWrist && rightWrist &&
+      leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5 &&
       leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
     
-    // Simple heuristic: if wrists are above elbows = palms up
-    const leftDirection = leftWrist.y < leftElbow.y ? 1 : -1;
-    const rightDirection = rightWrist.y < rightElbow.y ? 1 : -1;
+    // Calculate distance between hands
+    const handDistance = Math.abs(rightWrist.x - leftWrist.x);
     
-    return (leftDirection + rightDirection) / 2; // Average
+    // Calculate shoulder width as baseline
+    const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
+    
+    // Normalize: 0 when hands together, 1 when hands are 2x shoulder width apart
+    const normalizedWidth = constrain((handDistance - shoulderWidth * 0.5) / (shoulderWidth * 1.5), 0, 1);
+    
+    return normalizedWidth;
   }
   
   return palmDirection;
@@ -487,16 +704,27 @@ function calculateMotionAmount(currentPose) {
     previousPoses.shift();
   }
   
-  // Much more sensitive - reduced threshold from 50 to 15
+  // IMPROVED: Much higher threshold for stillness, lower baseline
   const avgMotion = validPoints > 0 ? totalMotion / validPoints : 0;
-  return constrain(avgMotion / 15, 0, 1); // More sensitive motion detection
+  motionAmountRaw = constrain(avgMotion / 25, 0, 1); // Higher threshold = lower baseline
+  
+  return motionAmountRaw;
 }
 
 function updateAudioFilters() {
   if (!audioInitialized) return;
   
   armStretchSmooth = lerp(armStretchSmooth, armStretch, 0.1);
-  motionAmountSmooth = lerp(motionAmountSmooth, motionAmount, 0.15);
+  
+  // IMPROVED: Motion smoothing with slower decay
+  if (motionAmountRaw > motionAmountSmooth) {
+    // Quick response when motion increases
+    motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, 0.3);
+  } else {
+    // Slow decay when motion decreases
+    motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, motionDecayRate);
+  }
+  
   handHeightSmooth = lerp(handHeightSmooth, handHeight, 0.1);
   
   // ARM STRETCH → BRIGHTNESS FILTER
@@ -510,30 +738,41 @@ function updateAudioFilters() {
   const motionFreq = map(motionAmountSmooth, 0, 1, 600, 1200);
   motionFilter.frequency.rampTo(motionFreq, 0.3);
   
-  // PALM DIRECTION → HIGH-PASS FILTER
-  palmFreq = map(palmDirection, -1, 1, 200, 3000);
+  // PALM DIRECTION (now horizontal distance) → HIGH-PASS FILTER
+  palmFreq = map(palmDirection, 0, 1, 200, 3000); // 0 to 1 instead of -1 to 1
   palmFilter.frequency.rampTo(palmFreq, 0.8);
   
-  // HAND HEIGHT → TWINKLE TRIGGER
-  if (handHeightSmooth > 0.3 && millis() - lastTwinkleTime > 500) {
+  // HAND HEIGHT → VOCAL CHANT TRIGGER
+  if (handHeightSmooth > 0.3 && millis() - lastTwinkleTime > 1000) { // Longer cooldown for vocal chant
     triggerTwinkle();
     lastTwinkleTime = millis();
+  }
+  
+  // NEW: JUMP → BREAKCORE TRIGGER
+  if (jumpAmount > jumpThreshold && millis() - lastJumpTime > 5000 && !isBreakcoreActive) {
+    startBreakcore();
+    lastJumpTime = millis();
   }
 }
 
 function triggerTwinkle() {
-  if (!audioInitialized || !twinkleSound) return;
+  if (!audioInitialized) return;
   
-  // Glitchy, punk distorted twinkles with BitCrusher
-  const twinkleNotes = ["C7", "E7", "G7", "B7", "D7", "F#7", "A7", "C8"];
-  const note = random(twinkleNotes);
-  
-  // Higher volume for punk energy
-  twinkleSound.triggerAttackRelease(note, "4n", "+0", 0.7);
-  console.log("⚡ Glitchy Punk Twinkle!");
+  // Try vocal sampler first, fallback to synth
+  if (vocalSampler) {
+    // Use vocal sample if available
+    vocalSampler.triggerAttackRelease("C4", "2n", "+0", 0.5);
+    console.log("🎵 Vocal Sample");
+  } else if (twinkleSound) {
+    // Fallback to synth version
+    const vocalChantNotes = ["Bb3", "D4", "F4", "Ab4", "Bb4"];
+    const note = random(vocalChantNotes);
+    twinkleSound.triggerAttackRelease(note, "2n", "+0", 0.3);
+    console.log("🎵 Vocal Chant");
+  }
 }
 
-// Visual system integration
+// BACK TO ORIGINAL: Much more responsive visual system
 function drawOscilloscopePattern(centerX, centerY, scale) {
   if (!audioAnalyzer) return;
   
@@ -641,16 +880,15 @@ function drawSpectralFlow(spectrum, scale) {
 }
 
 function drawGestureMeters() {
-  // Draw gesture parameter meters on the left side
   let meterX = 20;
   let meterY = 100;
-  let meterWidth = 200;
+  let meterWidth = 220;
   let meterHeight = 15;
-  let spacing = 25;
+  let spacing = 28;
   
   fill(0, 0, 0, 150);
   noStroke();
-  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 5 + 10); // Taller for 5 meters
+  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 6 + 10); // Room for 6 meters
   
   // Arm Stretch Meter
   fill(50);
@@ -661,16 +899,16 @@ function drawGestureMeters() {
   textSize(11);
   text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness`, meterX, meterY - 3);
   
-  // Motion Amount Meter (now shows counter-melody influence)
+  // Motion Amount Meter (now percussive stabs)
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
   fill(100, 255, 100);
   rect(meterX, meterY, meterWidth * motionAmountSmooth, meterHeight);
   fill(255);
-  text(`Motion: ${(motionAmountSmooth * 100).toFixed(0)}% → Counter-Melody Vol`, meterX, meterY - 3);
+  text(`Motion: ${(motionAmountSmooth * 100).toFixed(0)}% → Percussive Stabs`, meterX, meterY - 3);
   
-  // Hand Height Meter
+  // Hand Height Meter (vocal chant)
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
@@ -678,27 +916,39 @@ function drawGestureMeters() {
   fill(100, 100, 255);
   rect(meterX, meterY, meterWidth * handHeightDisplay, meterHeight);
   fill(255);
-  text(`Hand Height: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} → Glitch Twinkle`, meterX, meterY - 3);
+  text(`Hand Height: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} → Vocal Chant`, meterX, meterY - 3);
   
-  // Palm Direction Meter
+  // Palm Direction Meter (now horizontal distance + hihat)
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
-  let palmDisplay = map(palmDirection, -1, 1, 0, 1);
   fill(255, 255, 100);
-  rect(meterX, meterY, meterWidth * palmDisplay, meterHeight);
+  rect(meterX, meterY, meterWidth * palmDirection, meterHeight);
   fill(255);
-  text(`Palm Direction: ${palmDirection > 0 ? 'UP' : 'DOWN'} → High-Pass Filter`, meterX, meterY - 3);
+  text(`Hand Width: ${(palmDirection * 100).toFixed(0)}% → Hihat Volume`, meterX, meterY - 3);
   
-  // Counter-Melody Volume Display
+  // NEW: Jump Detection Meter
   meterY += spacing;
-  let counterVolume = 0.1 + (motionAmountSmooth * 0.3);
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255, 150, 255);
-  rect(meterX, meterY, meterWidth * (counterVolume / 0.4), meterHeight); // Scale to max 0.4
+  fill(255, 50, 50);
+  rect(meterX, meterY, meterWidth * (jumpAmount / 2), meterHeight); // Scale to max 2
   fill(255);
-  text(`Counter-Melody: ${(counterVolume * 100).toFixed(0)}% volume`, meterX, meterY - 3);
+  text(`Jump: ${(jumpAmount * 100).toFixed(0)}% → Breakcore Beat`, meterX, meterY - 3);
+  
+  // Breakcore Status
+  meterY += spacing;
+  if (isBreakcoreActive) {
+    fill(255, 50, 50);
+    rect(meterX, meterY, meterWidth, meterHeight);
+    fill(255);
+    text(`🔥 BREAKCORE ACTIVE 🔥`, meterX, meterY - 3);
+  } else {
+    fill(30);
+    rect(meterX, meterY, meterWidth, meterHeight);
+    fill(100);
+    text(`Breakcore: Ready`, meterX, meterY - 3);
+  }
 }
 
 function draw() {
@@ -706,14 +956,13 @@ function draw() {
   
   // Dark video overlay
   push();
-  tint(255, 80); // Darker overlay for cleaner aesthetic
+  tint(255, 80);
   if (video) {
     image(video, 0, 0, width, height);
   }
   pop();
   
   if (poses.length === 0) {
-    // Minimal waiting state
     fill(255, 100);
     textAlign(CENTER);
     textSize(18);
@@ -730,12 +979,14 @@ function draw() {
     handHeight = calculateHandHeight(pose);
     palmDirection = calculatePalmDirection(pose);
     motionAmount = calculateMotionAmount(pose);
+    motionAmountRaw = motionAmount; // Store raw value
+    jumpAmount = calculateJumpAmount(pose); // NEW: Jump detection
     
     updateAudioFilters();
     
     // Draw minimal skeleton (very subtle)
     if (connections && pose.keypoints) {
-      stroke(255, 30); // Very subtle
+      stroke(255, 30);
       strokeWeight(0.5);
       
       for (let j = 0; j < connections.length; j++) {
@@ -750,14 +1001,29 @@ function draw() {
       }
     }
     
-    // Draw oscilloscope pattern at body center (main visual feature)
+    // Draw enhanced oscilloscope pattern at body center
     if (audioInitialized && isPlaying) {
       let visualScale = map(armStretchSmooth + motionAmountSmooth, 0, 2, 0.8, 2.5);
+      
+      // Add breakcore visual boost
+      if (isBreakcoreActive) {
+        visualScale *= 1.5;
+        // Add extra visual energy during breakcore
+        push();
+        translate(bodyCenter.x, bodyCenter.y);
+        stroke(255, 0, 0, 100);
+        strokeWeight(3);
+        noFill();
+        let breakRadius = sin(millis() * 0.01) * 50 + 100;
+        ellipse(0, 0, breakRadius, breakRadius);
+        pop();
+      }
+      
       drawOscilloscopePattern(bodyCenter.x, bodyCenter.y, visualScale);
     }
   }
   
-  // Draw gesture meters for troubleshooting
+  // Draw enhanced gesture meters
   if (audioInitialized) {
     drawGestureMeters();
   }
@@ -767,6 +1033,11 @@ function draw() {
   textAlign(RIGHT);
   textSize(12);
   text(`Visual: ${visualModes[visualMode]} (M to change)`, width - 20, height - 20);
+  
+  // NEW: Instructions update
+  textSize(10);
+  text(`Small jump to trigger breakcore!`, width - 20, height - 40);
+  text(`Spread hands wide for hihat rhythm`, width - 20, height - 55);
   textAlign(LEFT);
 }
 
@@ -776,7 +1047,6 @@ function mousePressed() {
       startAmbientMusic();
     });
   } else {
-    // Toggle music on/off
     if (isPlaying) {
       stopMusic();
     } else {
@@ -789,6 +1059,11 @@ function keyPressed() {
   if (key.toLowerCase() === 'm') {
     visualMode = (visualMode + 1) % visualModes.length;
     console.log('Visual mode:', visualModes[visualMode]);
+  }
+  
+  // NEW: Manual breakcore trigger for testing
+  if (key.toLowerCase() === 'b' && audioInitialized && !isBreakcoreActive) {
+    startBreakcore();
   }
 }
 
