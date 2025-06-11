@@ -61,7 +61,8 @@ let bodyCenter = {x: 640, y: 480};
 // Sample paths (in samples/ folder) - UPDATED NAMES
 const samplePaths = {
   bass: "samples/ZEN_SIC_bass_synth_sub_one_shot_vibecity_C.wav",
-  arpeggio: "samples/Srm_PD_D_Pad2.wav", // UPDATED with underscore
+  arpeggio: "samples/Srm_Crystal_falls2.wav",
+  //arpeggio: "samples/Srm_PD_D_Pad2.wav",
   bell: "samples/bell_d4.wav",
   vocalChoir: "samples/epic_choir_f4.wav",
   kick: "samples/FSS_SHDEV1_Kick_Silver.wav",
@@ -311,14 +312,14 @@ async function loadSamples() {
   console.log("Loading samples...");
   
   try {
-    // BASS SAMPLER (C root note) - TRY LOOPED VERSION for longer sustain
+    // BASS SAMPLER (C root note) - LOUDER
     bassSampler = new Tone.Sampler({
       urls: {
         "C2": samplePaths.bass
       },
-      volume: -3,
+      volume: 0, // INCREASED from -3 to 0dB
       attack: 0.1,
-      release: 4, // Much longer release
+      release: 4,
       curve: "exponential"
     }).connect(brightnessFilter);
     
@@ -473,23 +474,32 @@ function startAmbientMusic() {
     currentChordIndex = (currentChordIndex + 1) % chordProgression.length;
   }, "2m");
   
-  // Arpeggio patterns (RHYTHMIC & NATURAL - no pitch shifting)
+  // Arpeggio patterns (ACTUAL QUICK ARPEGGIOS - multiple notes)
+  const quickArpeggioPatterns = [
+    ["C3", "Eb3", "G3", "Bb3", "C4", "Bb3", "G3", "Eb3"], // Bb minor arpeggio
+    ["F3", "Ab3", "C4", "Eb4", "F4", "Eb4", "C4", "Ab3"], // F minor arpeggio  
+    ["Db3", "F3", "Ab3", "C4", "Db4", "C4", "Ab3", "F3"], // Db major arpeggio
+    ["Eb3", "G3", "Bb3", "D4", "Eb4", "D4", "Bb3", "G3"]  // Eb minor arpeggio
+  ];
+  
   let arpeggioNoteIndex = 0;
+  let arpeggioPatternIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    // RHYTHMIC PATTERN - play on specific beats for musicality
-    if (arpeggioNoteIndex % 4 === 0 || arpeggioNoteIndex % 4 === 2) { // On beats 1 and 3
-      if (arpeggioSampler && arpeggioSampler.loaded) {
-        // Play at NATURAL PITCH (C3) - no pitch shifting to avoid speed changes
-        arpeggioSampler.triggerAttackRelease("C3", "4m", time, 0.6); // FULL 4 measures = ~8s for 7s sample
-        console.log(`🎵 Playing arpeggio at NATURAL pitch C3 for full duration (7s sample)`);
-      }
+    const currentPattern = quickArpeggioPatterns[arpeggioPatternIndex];
+    const note = currentPattern[arpeggioNoteIndex % currentPattern.length];
+    
+    if (arpeggioSampler && arpeggioSampler.loaded) {
+      // Quick arpeggio notes - shorter duration for rapid feel
+      arpeggioSampler.triggerAttackRelease(note, "8n", time, 0.5);
+      console.log(`🎵 Quick arpeggio: ${note} (pattern ${arpeggioPatternIndex})`);
     }
     
     arpeggioNoteIndex++;
-    if (arpeggioNoteIndex >= 16) { // Reset every 4 measures
+    if (arpeggioNoteIndex % 8 === 0) { // Every 2 measures (8 eighth notes)
       arpeggioNoteIndex = 0;
+      arpeggioPatternIndex = (arpeggioPatternIndex + 1) % quickArpeggioPatterns.length;
     }
-  }, "4n"); // Every quarter note for rhythmic pattern
+  }, "8n"); // 8th notes for quick arpeggio feel
   
   // Subtle kick and clap rhythm (low volume)
   Tone.getTransport().scheduleRepeat((time) => {
@@ -502,7 +512,7 @@ function startAmbientMusic() {
     }
   }, "2n"); // Half notes
   
-  // Lush strings (VERY AUDIBLE SUSTAINED CHORDS)
+  // Lush strings (SYNCED WITH BASS TIMING)
   const stringChords = [
     ["G3", "D4", "G4"],    // G major chord
     ["C3", "G3", "C4"],    // C major chord  
@@ -511,17 +521,16 @@ function startAmbientMusic() {
   ];
   let stringChordIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    // PLAY EVERY TIME for now - no randomness to ensure audibility
     const chord = stringChords[stringChordIndex % stringChords.length];
     if (stringsSampler && stringsSampler.loaded) {
-      // Play all notes of the chord simultaneously for sustained pad effect
+      // Play all notes of the chord simultaneously, synced with bass
       chord.forEach((note, index) => {
-        stringsSampler.triggerAttackRelease(note, "2m", time + (index * 0.05), 0.8); // High volume
+        stringsSampler.triggerAttackRelease(note, "2m", time + (index * 0.05), 0.6);
       });
-      console.log(`🎻 Playing LOUD string chord: ${chord.join(', ')} at +3dB`);
+      console.log(`🎻 String chord: ${chord.join(', ')} - SYNCED with bass`);
     }
     stringChordIndex++;
-  }, "2m"); // Every 2 measures
+  }, "2m"); // SYNCED with bass chord changes (every 2 measures)
   
   // Vocal choir (FULL 3+ SECOND DURATION + LOWER OCTAVES)
   const choirNotes = ["F4", "Ab4", "Bb4", "C5"];
@@ -722,13 +731,15 @@ function calculateMotionAmount(currentPose) {
   let totalMotion = 0;
   let validPoints = 0;
   
-  const keyPoints = [0, 11, 12, 13, 14, 15, 16, 23, 24];
+  // MORE SELECTIVE: Only track major body points for "whole body" motion
+  // Exclude head/face points that move when sitting
+  const majorBodyPoints = [11, 12, 23, 24]; // Shoulders and hips only
   
-  for (let i of keyPoints) {
+  for (let i of majorBodyPoints) {
     const current = currentPose.keypoints[i];
     const previous = prevPose.keypoints[i];
     
-    if (current && previous && current.confidence > 0.5 && previous.confidence > 0.5) {
+    if (current && previous && current.confidence > 0.7 && previous.confidence > 0.7) { // Higher confidence
       const distance = dist(current.x, current.y, previous.x, previous.y);
       totalMotion += distance;
       validPoints++;
@@ -736,12 +747,13 @@ function calculateMotionAmount(currentPose) {
   }
   
   previousPoses.push(currentPose);
-  if (previousPoses.length > 5) {
+  if (previousPoses.length > 8) { // Longer history for stability
     previousPoses.shift();
   }
   
+  // MUCH HIGHER threshold - requires significant body movement
   const avgMotion = validPoints > 0 ? totalMotion / validPoints : 0;
-  motionAmountRaw = constrain(avgMotion / 25, 0, 1);
+  motionAmountRaw = constrain(avgMotion / 50, 0, 1); // INCREASED threshold from 25 to 50
   
   return motionAmountRaw;
 }
@@ -773,8 +785,8 @@ function updateAudioFilters() {
   brightnessFreq = map(armStretchSmooth, 0, 1, 200, 4000);
   brightnessFilter.frequency.rampTo(brightnessFreq, 0.5);
   
-  // MOTION AVERAGE → PERCUSSION LOOP VOLUME (MUCH MORE DRAMATIC)
-  const percVol = map(motionAverage, 0, 0.3, -25, 0); // MUCH MORE DRAMATIC RANGE (-25dB to 0dB)
+  // MOTION AVERAGE → PERCUSSION LOOP VOLUME (LESS DISTORTED)
+  const percVol = map(motionAverage, 0, 0.4, -20, -6); // REDUCED max to avoid distortion (-6dB instead of 0dB)
   if (percussionLoop && percussionLoop.loaded) {
     percussionLoop.volume.rampTo(percVol, 0.3);
     console.log(`🥁 Percussion volume: ${percVol.toFixed(1)}dB (motion: ${(motionAverage*100).toFixed(0)}%)`);
@@ -784,9 +796,9 @@ function updateAudioFilters() {
   palmFreq = map(palmDirection, 0, 1, 200, 3000);
   palmFilter.frequency.rampTo(palmFreq, 0.8);
   
-  // NEW: HAND HEIGHT → GATING EFFECT (higher hands = more stuttering)
-  const gateDepth = map(Math.abs(handHeightSmooth), 0, 1, 0, 0.9);
-  const gateRate = map(Math.abs(handHeightSmooth), 0, 1, 2, 12);
+  // NEW: HAND HEIGHT → EXTREME GATING EFFECT (more stuttery at extremes)
+  const gateDepth = map(Math.abs(handHeightSmooth), 0, 1, 0, 0.95); // INCREASED max from 0.9 to 0.95
+  const gateRate = map(Math.abs(handHeightSmooth), 0, 1, 1, 20); // INCREASED max from 12 to 20
   
   if (stringsGate) {
     stringsGate.depth.rampTo(gateDepth, 0.2);
@@ -795,7 +807,7 @@ function updateAudioFilters() {
   
   if (choirGate) {
     choirGate.depth.rampTo(gateDepth, 0.2);
-    choirGate.frequency.rampTo(gateRate * 1.5, 0.2); // Faster for choir
+    choirGate.frequency.rampTo(gateRate * 1.5, 0.2); // Even faster for choir (up to 30Hz)
   }
   
   // HAND HEIGHT → HAND RAISE SYNTH TRIGGER (make sure this still works!)
@@ -982,7 +994,7 @@ function drawGestureMeters() {
   textSize(11);
   text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness Filter`, meterX, meterY - 3);
   
-  // Motion Amount Meter - SHOWS DRAMATIC PERCUSSION VOLUME
+  // Motion Amount Meter - WHOLE BODY MOTION ONLY
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
@@ -991,8 +1003,8 @@ function drawGestureMeters() {
   fill(255);
   
   // Calculate and display actual percussion volume
-  const currentPercVol = map(motionAverage, 0, 0.3, -25, 0);
-  text(`Motion: ${(motionAverage * 100).toFixed(0)}% → Perc: ${currentPercVol.toFixed(1)}dB`, meterX, meterY - 3);
+  const currentPercVol = map(motionAverage, 0, 0.4, -20, -6);
+  text(`Motion (body): ${(motionAverage * 100).toFixed(0)}% → Perc: ${currentPercVol.toFixed(1)}dB`, meterX, meterY - 3);
   
   // Hand Height Meter (shows trigger threshold)
   meterY += spacing;
