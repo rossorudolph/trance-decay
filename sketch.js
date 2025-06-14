@@ -5,7 +5,7 @@ let connections;
 let modelLoaded = false;
 let poseDetectionStarted = false;
 
-// Audio system - NOW SAMPLE BASED
+// Audio system
 let audioInitialized = false;
 let samplesLoaded = false;
 
@@ -13,17 +13,64 @@ let samplesLoaded = false;
 let bassSampler, arpeggioSampler, bellSampler, vocalChoirSampler;
 let kickSampler, clapSampler, stringsSampler, handRaiseSynth;
 let percussionLoop, sidechainedNoise;
-let breakcoreKick; // Gabber kick for breakcore
+let breakcoreKick;
+let glitchBeat;
+
+// NEW: Mic input and vocal processing
+let micInput;
+let micRecorder;
+let voiceLoop;
+let voiceGrainPlayer;
+let voiceEffectsChain;
+let isRecordingVoice = false;
+let recordingStartTime = 0;
+let maxRecordingTime = 4000; // 4 seconds max
+
+// NEW: Pop sample hook (for New Jeans OMG style)
+let popHookSampler;
+let popHookActive = false;
 
 // Effects
 let brightnessFilter, motionFilter, palmFilter, masterReverb, masterDelay, masterDistortion;
-let stringsGate, choirGate; // NEW: Gating effects for hand height
+let stringsGate, choirGate;
+let stringsLFO;
+let arpeggioLFO, arpeggioFlutterFilter;
+let masterGain, dryGain;
 let isPlaying = false;
 
 // Breakcore system
 let isBreakcoreActive = false;
 let breakcoreStartTime = 0;
 let breakCoreDuration = 4000;
+
+// Jersey club system
+let jerseyClubActive = false;
+let jerseyClubStartTime = 0;
+let jerseyClubDuration = 4000;
+
+function startJerseyClubKick() {
+  if (jerseyClubActive || !kickSampler || !kickSampler.loaded) return;
+  
+  jerseyClubActive = true;
+  jerseyClubStartTime = millis();
+  
+  console.log("🏀 JERSEY CLUB KICK PATTERN!");
+  
+  const jerseyPattern = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.125, 1.25, 1.5, 1.75];
+  
+  jerseyPattern.forEach(beat => {
+    Tone.getTransport().schedule((time) => {
+      if (kickSampler && kickSampler.loaded) {
+        kickSampler.triggerAttackRelease("C1", "32n", time, 0.8);
+      }
+    }, `+${beat}`);
+  });
+  
+  setTimeout(() => {
+    jerseyClubActive = false;
+    console.log("Jersey club kick ended");
+  }, jerseyClubDuration);
+}
 
 // Movement tracking
 let previousPoses = [];
@@ -38,14 +85,15 @@ let handHeightSmooth = 0;
 let palmDirection = 0;
 let lastTwinkleTime = 0;
 
-// NEW: Motion averaging for percussion
 let motionHistory = [];
 let motionAverage = 0;
 
-// Jump detection
+// Jump detection - FIXED CALCULATION
 let jumpAmount = 0;
-let jumpThreshold = 0.6; // INCREASED from 0.3 - less sensitive
+let jumpThreshold = 0.4; // LOWERED from 0.8 - more sensitive
 let lastJumpTime = 0;
+let jumpHistory = [];
+let lastGroundLevel = 0; // Track consistent ground level
 
 // Audio parameters
 let brightnessFreq = 400;
@@ -57,12 +105,31 @@ let audioAnalyzer;
 let visualMode = 1;
 let visualModes = ['Lissajous Scale', 'Spectral Flow'];
 let bodyCenter = {x: 640, y: 480};
+let bodyCenterSmooth = {x: 640, y: 480};
+let bodyRotation = 0;
+let traceBuffer;
 
-// Sample paths (in samples/ folder) - UPDATED NAMES
+// Voice visualization
+let voiceWaveform = [];
+let voiceVisualsActive = false;
+
+// NEW: Floating voice visualization
+let voiceWavePosition = {x: 0, y: 0};
+let voiceWaveTarget = {x: 0, y: 0};
+let voiceWavePoints = [];
+
+// NEW: Blob tracking system
+let bodyBoundingBox = {x: 0, y: 0, width: 0, height: 0};
+let trackingPoints = [];
+let blobTrackingActive = false;
+
+let leftHandSmooth = {x: 0, y: 0};
+let rightHandSmooth = {x: 0, y: 0};
+
+// Sample paths - UPDATED WITH NEW SAMPLES
 const samplePaths = {
   bass: "samples/ZEN_SIC_bass_synth_sub_one_shot_vibecity_C.wav",
   arpeggio: "samples/Srm_Crystal_falls2.wav",
-  //arpeggio: "samples/Srm_PD_D_Pad2.wav",
   bell: "samples/bell_d4.wav",
   vocalChoir: "samples/epic_choir_f4.wav",
   kick: "samples/FSS_SHDEV1_Kick_Silver.wav",
@@ -71,29 +138,110 @@ const samplePaths = {
   percussionLoop: "samples/PLX_140_percussion_loop_brain.wav",
   sidechainedNoise: "samples/03_Audiotent_-_UNF_-_Sidechained_Noise_-_127bpm.wav",
   handRaise: "samples/FSS_RKHSOD_150_synth_screech_loop_gatedshortfour.wav",
-  breakcoreKick: "samples/FSS_SHDEV1_Hard_Kick_Whiteroom_B.wav"
+  breakcoreKick: "samples/FSS_SHDEV1_Hard_Kick_Whiteroom_B.wav",
+  glitchBeat: "samples/RU_TD_135_textures_fx_glitch_minimal.wav",
+  // NEW: Add a pop hook sample (you'll need to add this file)
+  popHook: "samples/newjeans_omg_hook_processed.wav" // Processed version of New Jeans hook
 };
 
-// Chord progression (now using sample pitches)
+// Chord progression (Bb minor key to match New Jeans OMG transposed)
 const chordProgression = [
   ["Bb2", "D3", "F3", "Ab3"],   // Bb minor 7
-  ["F2", "Ab2", "C3", "Eb3"],   // F minor 7
+  ["F2", "Ab2", "C3", "Eb3"],   // F minor 7  
   ["Db3", "F3", "Ab3", "C4"],   // Db major 7
   ["Eb2", "G2", "Bb2", "D3"]    // Eb minor 7
 ];
 
-// Arpeggio patterns (will be played with sample pitching)
-const arpeggioPatterns = [
-  ["Bb3", "D4", "F4", "Ab4", "Bb4", "Ab4", "F4", "D4"],
-  ["F3", "Ab3", "C4", "Eb4", "F4", "Eb4", "C4", "Ab3"],
-  ["Db4", "F4", "Ab4", "C5", "F5", "C5", "Ab4", "F4"],
-  ["Eb4", "G4", "Bb4", "D5", "Eb5", "D5", "Bb4", "G4"]
+// Energetic repeating melodies
+const repeatingMelodies = [
+  {
+    notes: ["F4", "Bb4", "D5", "F5", "Ab4", "F4", "Bb4", "D4", "F4", "Bb4"],
+    timings: [0, 0.25, 0.5, 0.75, 1.0, 1.5, 1.75, 2.0, 2.5, 3.0],
+    repeat: true
+  },
+  {
+    notes: ["C5", "F4", "Ab4", "C5", "Eb5", "Ab4", "F4", "C4", "F4", "Ab4"],
+    timings: [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.75, 2.0, 2.25, 2.75],
+    repeat: true
+  },
+  {
+    notes: ["Ab4", "Db5", "F5", "Ab5", "C5", "Ab4", "Db4", "F4", "Ab4", "Db5"],
+    timings: [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 2.25, 2.5],
+    repeat: true
+  },
+  {
+    notes: ["Bb4", "Eb5", "G4", "Bb4", "D5", "Bb4", "Eb4", "G4", "Bb4", "D5"],
+    timings: [0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5],
+    repeat: true
+  }
+];
+
+// Hymnal vocal chanting patterns (in Bb minor key)
+const hymnalChanting = [
+  {
+    notes: ["Bb4", "F4"],
+    timings: [0.5, 2.5],
+    duration: "2m"
+  },
+  {
+    notes: ["F4", "C5"],  
+    timings: [1.0, 3.0],
+    duration: "2m"
+  },
+  {
+    notes: ["Db5", "Ab4"],
+    timings: [0.0, 2.0],
+    duration: "2m"
+  },
+  {
+    notes: ["Eb4", "Bb4"],
+    timings: [1.5, 3.5],
+    duration: "2m"
+  }
+];
+
+// Strings melodies
+const stringsMelodies = [
+  {
+    notes: ["Bb3", "D4", "F3", "Ab3", "Bb3", "F3"],
+    timings: [0, 1.0, 2.0, 3.0, 4.0, 5.0],
+    duration: "2n"
+  },
+  {
+    notes: ["F3", "Ab3", "C4", "Eb3", "F3", "C4"],
+    timings: [0, 1.0, 2.0, 3.0, 4.0, 5.0],
+    duration: "2n"
+  },
+  {
+    notes: ["Db4", "F3", "Ab3", "C4", "Db4", "Ab3"],
+    timings: [0, 1.0, 2.0, 3.0, 4.0, 5.0],
+    duration: "2n"
+  },
+  {
+    notes: ["Eb3", "G3", "Bb3", "D4", "Eb3", "Bb3"],
+    timings: [0, 1.0, 2.0, 3.0, 4.0, 5.0],
+    duration: "2n"
+  }
 ];
 
 let currentChordIndex = 0;
 
 function setup() {
-  createCanvas(1280, 960);
+  // FULL SCREEN SETUP - maintain aspect ratio
+  let canvasWidth = windowWidth;
+  let canvasHeight = windowHeight;
+  
+  // Maintain 16:9 aspect ratio for video compatibility
+  if (canvasWidth / canvasHeight > 16/9) {
+    canvasWidth = canvasHeight * (16/9);
+  } else {
+    canvasHeight = canvasWidth * (9/16);
+  }
+  
+  createCanvas(canvasWidth, canvasHeight);
+  
+  // Create trace buffer with same dimensions
+  traceBuffer = createGraphics(canvasWidth, canvasHeight);
   
   // Mobile detection
   const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
@@ -101,17 +249,11 @@ function setup() {
   if (isMobile) {
     console.log("Mobile device detected");
     showMobileInstructions();
-    resizeCanvas(640, 480);
     video = createCapture(VIDEO, videoReady);
-    video.size(640, 480);
-  // NEW: Test hand raise synth manually
-  if (key.toLowerCase() === 'h' && audioInitialized) {
-    console.log("🔥 TESTING HAND RAISE SYNTH MANUALLY");
-    triggerHandRaiseSynth();
-  }
-} else {
+    video.size(canvasWidth, canvasHeight);
+  } else {
     video = createCapture(VIDEO, videoReady);
-    video.size(1280, 960);
+    video.size(canvasWidth, canvasHeight);
   }
   
   video.hide();
@@ -123,13 +265,18 @@ function setup() {
     console.error('Error creating bodyPose:', error);
   }
   
-  console.log("SAMPLE-BASED VERSION - DRAMATIC CHANGES");
-  console.log("Click to start/stop ambient music with samples");
-  console.log("Press 'A' arpeggio natural pitch, 'V' vocal harmonies, 'S' strings, 'H' aggressive synth");
-  console.log("PERCUSSION: Now -25dB to 0dB range (MUCH more dramatic!)");
-  console.log("VOCALS: Now plays 3 octaves simultaneously for richness");
-  console.log("HAND SYNTH: Much more aggressive FM + distortion when hands raised!");
-  console.log("Raise hands above 40% threshold to trigger synth");
+  // Initialize voice wave position
+  voiceWavePosition = {x: width / 2, y: height / 2};
+  voiceWaveTarget = {x: width / 2, y: height / 2};
+  
+  console.log("ENHANCED IDM POSE CONTROLLER - FINAL VERSION");
+  console.log("✓ FIXED: Voice now stores and plays back recordings");
+  console.log("✓ NEW: Floating meandering voice waveform visualization");
+  console.log("✓ ENHANCED: Pop hook with glitchy effects + sped up snippets");
+  console.log("✓ REFINED: Thinner white blob tracking (removed yellow dots)");
+  console.log("✓ IMPROVED: Faster oscilloscope fading for cleaner lines");
+  console.log("⚠️  USE HEADPHONES to prevent mic feedback!");
+  console.log("SPACE=Voice recording, V=Glitchy pop hook, B=Blob tracking");
 }
 
 function modelReady() {
@@ -159,24 +306,6 @@ function videoReady() {
   }
 }
 
-function videoError(err) {
-  console.error('❌ Video error:', err);
-  if (err && err.message) {
-    const errorDiv = document.createElement('div');
-    errorDiv.style.cssText = `
-      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      background: rgba(0,0,0,0.9); color: white; padding: 20px; border-radius: 10px;
-      font-family: Arial, sans-serif; text-align: center; z-index: 1000;
-    `;
-    errorDiv.innerHTML = `
-      <h3>Camera Access Required</h3>
-      <p>Please allow camera access and refresh the page.</p>
-      <button onclick="location.reload()" style="padding: 10px 20px; margin-top: 10px;">Refresh</button>
-    `;
-    document.body.appendChild(errorDiv);
-  }
-}
-
 function startPoseDetection() {
   if (poseDetectionStarted || !modelLoaded || !video) return;
   
@@ -203,14 +332,15 @@ function showMobileInstructions() {
       max-width: 300px;
     `;
     instructionDiv.innerHTML = `
-      <h2>🎵 Trance-Decay</h2>
-      <p>Interactive sample-based music</p>
+      <h2>🎵 Enhanced IDM Controller</h2>
+      <p>Voice + Movement + Glitch</p>
       <p><strong>TAP TO START</strong></p>
       <p style="font-size: 12px; margin-top: 20px;">
-        • Allow camera access<br>
+        • Allow camera + mic access<br>
+        • <strong>USE HEADPHONES!</strong><br>
         • Turn up volume<br>
-        • Move to control the music<br>
-        • Now with high-quality samples!
+        • Move and speak to control music<br>
+        • Now with blob tracking + voice loops!
       </p>
     `;
     document.body.appendChild(instructionDiv);
@@ -220,9 +350,8 @@ function showMobileInstructions() {
 async function initializeAudio() {
   if (audioInitialized) return;
   
-  console.log("Initializing sample-based audio system...");
+  console.log("Initializing enhanced audio system...");
   
-  // Mobile fixes
   const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   
   try {
@@ -240,10 +369,65 @@ async function initializeAudio() {
     return;
   }
   
-  // Create audio analyzer
-  let masterGain = new Tone.Gain(1).toDestination();
+  // Create master gain and analyzer
+  masterGain = new Tone.Gain(1).toDestination();
+  dryGain = new Tone.Gain(1).connect(masterGain); // Direct path for drums
   audioAnalyzer = new Tone.Analyser('fft', 512);
   masterGain.connect(audioAnalyzer);
+  
+  // NEW: Initialize microphone input with feedback prevention
+  try {
+    micInput = new Tone.UserMedia();
+    await micInput.open();
+    console.log("✓ Microphone access granted");
+    
+    // FEEDBACK PREVENTION: Add noise gate and aggressive filtering
+    const voiceGate = new Tone.Gate(-30, 0.1); // Gate at -30dB to prevent feedback
+    const voiceHighPass = new Tone.Filter(300, "highpass"); // Remove low freq feedback
+    const voiceCompressor = new Tone.Compressor(-24, 3); // Compress to control levels
+    const voiceDelay = new Tone.FeedbackDelay("8n", 0.4); // Reduced feedback
+    const voiceDistortion = new Tone.Distortion(0.3); // Reduced distortion
+    const voiceFilter = new Tone.Filter(800, "lowpass");
+    const voiceBitCrusher = new Tone.BitCrusher(4);
+    
+    voiceEffectsChain = micInput.connect(voiceGate);
+    voiceGate.connect(voiceHighPass);
+    voiceHighPass.connect(voiceCompressor);
+    voiceCompressor.connect(voiceDistortion);
+    voiceDistortion.connect(voiceBitCrusher);
+    voiceBitCrusher.connect(voiceFilter);
+    voiceFilter.connect(voiceDelay);
+    voiceDelay.connect(masterGain);
+    
+    // Create grain player for voice loops
+    voiceGrainPlayer = new Tone.GrainPlayer({
+      grainSize: 0.1,
+      overlap: 0.1,
+      volume: -18 // Quieter to prevent feedback
+    }).connect(voiceEffectsChain);
+    
+    console.log("✓ Voice processing chain created with feedback prevention");
+    console.warn("⚠️ USE HEADPHONES to prevent microphone feedback!");
+    
+  } catch (error) {
+    console.warn("Microphone not available:", error);
+  }
+  
+  // LFO for arpeggio flutter  
+  arpeggioLFO = new Tone.LFO({
+    frequency: 6,
+    type: "sine",
+    min: 200,
+    max: 2000
+  }).start();
+  
+  arpeggioFlutterFilter = new Tone.Filter({
+    frequency: 800,
+    type: "lowpass",
+    Q: 3
+  });
+  
+  arpeggioLFO.connect(arpeggioFlutterFilter.frequency);
   
   // Create effects chain
   masterDistortion = new Tone.Distortion({
@@ -289,64 +473,68 @@ async function initializeAudio() {
     Q: 3
   }).connect(motionFilter);
   
-  // NEW: Gating effects for hand height control
+  // Gating effects
   stringsGate = new Tone.Tremolo({
-    frequency: 4,     // Base tremolo rate
-    depth: 0         // Will be controlled by hand height
+    frequency: 4,
+    depth: 0
   }).connect(palmFilter);
   
   choirGate = new Tone.Tremolo({
-    frequency: 6,     // Faster tremolo for choir
-    depth: 0         // Will be controlled by hand height  
+    frequency: 6,
+    depth: 0
   }).connect(palmFilter);
   
-  // Load samples and create samplers
+  // Evolving LFO for strings
+  stringsLFO = new Tone.LFO({
+    frequency: 0.2,
+    type: "sine",
+    min: 0.1,
+    max: 0.8
+  }).start();
+  
+  // Load samples
   await loadSamples();
   
   Tone.getTransport().bpm.value = 125;
   audioInitialized = true;
-  console.log("✓ Sample-based audio system ready");
+  console.log("✓ Enhanced audio system ready");
 }
 
 async function loadSamples() {
   console.log("Loading samples...");
   
   try {
-    // BASS SAMPLER (C root note) - LOUDER
+    // BASS SAMPLER
     bassSampler = new Tone.Sampler({
       urls: {
         "C2": samplePaths.bass
       },
-      volume: 0, // INCREASED from -3 to 0dB
+      volume: 0,
       attack: 0.1,
       release: 4,
       curve: "exponential"
     }).connect(brightnessFilter);
     
-    // ARPEGGIO SAMPLER (C3 root note) - ENHANCED DEBUGGING
+    // ARPEGGIO SAMPLER - quieter
     arpeggioSampler = new Tone.Sampler({
       urls: {
         "C3": samplePaths.arpeggio
       },
-      volume: -1,
+      volume: -12,
       attack: 0.1,
       release: 1.0,
-      baseUrl: "", // Ensure no base URL conflicts
       onload: () => {
-        console.log("✓ ARPEGGIO SAMPLE LOADED:");
-        console.log("  File path:", samplePaths.arpeggio);
-        console.log("  Expected: Soft fluttering 7-second sample");
-        console.log("  If it sounds like synth, the file may not be loading correctly");
-      },
-      onerror: (error) => {
-        console.error("❌ ARPEGGIO SAMPLE FAILED:");
-        console.error("  Error:", error);
-        console.error("  File path:", samplePaths.arpeggio);
-        console.error("  Check: 1) File exists 2) Correct name 3) Audio format supported");
+        console.log("✓ ARPEGGIO SAMPLE LOADED");
+        if (arpeggioFlutterFilter && brightnessFilter) {
+          arpeggioSampler.connect(arpeggioFlutterFilter);
+          arpeggioFlutterFilter.connect(brightnessFilter);
+        } else {
+          arpeggioSampler.connect(brightnessFilter);
+        }
       }
-    }).connect(brightnessFilter);
+    });
     
-    // BELL SAMPLER (D4 root note)
+    // BELL SAMPLER
     bellSampler = new Tone.Sampler({
       urls: {
         "D4": samplePaths.bell
@@ -354,57 +542,68 @@ async function loadSamples() {
       volume: -6
     }).connect(masterReverb);
     
-    // VOCAL CHOIR SAMPLER (F4 root note) - SUPER LOUD
+    // VOCAL CHOIR SAMPLER - very loud
     vocalChoirSampler = new Tone.Sampler({
       urls: {
         "F4": samplePaths.vocalChoir
       },
-      volume: 6, // MASSIVE INCREASE from 0 to +6dB
+      volume: 6,
       attack: 0.5,
       release: 2,
       onload: () => {
-        console.log("✓ Vocal choir sample loaded - VERY LOUD now (+6dB)");
+        console.log("✓ Vocal choir sample loaded");
       }
     }).connect(choirGate);
     
-    // KICK SAMPLER (low volume for now)
+    // KICK SAMPLER - dry path
     kickSampler = new Tone.Sampler({
       urls: {
         "C1": samplePaths.kick
       },
-      volume: -12
-    }).connect(masterDistortion);
+      volume: -6,
+      onload: () => {
+        console.log("✓ Kick loaded - connecting to dry gain");
+        kickSampler.connect(dryGain);
+      }
+    });
     
-    // CLAP SAMPLER (low volume for now)
+    // CLAP SAMPLER - dry path
     clapSampler = new Tone.Sampler({
       urls: {
         "C3": samplePaths.clap
       },
-      volume: -12
-    }).connect(masterDistortion);
+      volume: -12,
+      onload: () => {
+        console.log("✓ Clap loaded - connecting to dry gain");
+        clapSampler.connect(dryGain);
+      }
+    });
     
-    // LUSH STRINGS SAMPLER (G3 root note) - VERY LOUD
+    // STRINGS SAMPLER with evolving LFO
     stringsSampler = new Tone.Sampler({
       urls: {
         "G3": samplePaths.strings
       },
-      volume: 3, // INCREASED back to +3dB (very loud)
+      volume: 3,
       attack: 1.5,
       release: 4,
       onload: () => {
-        console.log("✓ Strings sample loaded - VERY LOUD (+3dB) for testing");
+        console.log("✓ Strings sample loaded");
+        if (stringsLFO) {
+          stringsLFO.connect(stringsSampler.volume);
+        }
       }
-    }).connect(masterReverb); // BYPASS gating for now
+    }).connect(stringsGate);
     
-    // HAND RAISE SYNTH (thick screech)
+    // HAND RAISE SYNTH - NEW: Harmonic version
     handRaiseSynth = new Tone.Sampler({
       urls: {
         "C3": samplePaths.handRaise
       },
-      volume: -3
+      volume: -6
     }).connect(palmFilter);
     
-    // BREAKCORE GABBER KICK - with loaded check
+    // BREAKCORE KICK
     breakcoreKick = new Tone.Sampler({
       urls: {
         "C1": samplePaths.breakcoreKick
@@ -415,167 +614,324 @@ async function loadSamples() {
       }
     }).connect(masterDistortion);
     
-    // PERCUSSION LOOP (will be triggered manually)
+    // PERCUSSION LOOP
     percussionLoop = new Tone.Player({
       url: samplePaths.percussionLoop,
       loop: true,
-      volume: -12, // Start very quiet
+      volume: -12,
       onload: () => {
         console.log("✓ Percussion loop loaded");
       }
     }).connect(motionFilter);
     
-    // SIDECHAINED NOISE (127bpm, ~4s) - MANUAL SYNC
+    // SIDECHAINED NOISE
     sidechainedNoise = new Tone.Player({
       url: samplePaths.sidechainedNoise,
       loop: true,
       volume: -9,
       onload: () => {
         console.log("✓ Sidechained noise loaded");
-        // Manual sync: if the sample is 4 seconds at 127bpm
-        // At 125bpm transport, we need to slow it down to maintain musical sync
-        // 127bpm = 2.117 beats per second
-        // 125bpm = 2.083 beats per second  
-        // Ratio = 2.083/2.117 = 0.984
         sidechainedNoise.playbackRate = 0.984;
-        console.log("Noise playback rate set to 0.984 for 125bpm sync");
       }
     }).connect(palmFilter);
     
-    // Wait for all samples to load
+    // GLITCH BEAT - MUCH LOUDER NOW
+    glitchBeat = new Tone.Player({
+      url: samplePaths.glitchBeat,
+      loop: true,
+      volume: 3, // BOOSTED from 0 to +3dB for better audibility
+      onload: () => {
+        console.log("✓ Glitchy minimal beat loaded - BOOSTED VOLUME");
+        glitchBeat.connect(dryGain); // Connect to dry gain for clarity
+      }
+    });
+    
+    // NEW: POP HOOK SAMPLER (New Jeans OMG style)
+    popHookSampler = new Tone.Sampler({
+      urls: {
+        "Bb3": samplePaths.popHook // Assuming processed to Bb minor
+      },
+      volume: -3,
+      attack: 0.05,
+      release: 2,
+      onload: () => {
+        console.log("✓ Pop hook sample loaded");
+      }
+    }).connect(masterReverb);
+    
     await Tone.loaded();
     samplesLoaded = true;
     console.log("✓ All samples loaded successfully");
     
   } catch (error) {
     console.error("Error loading samples:", error);
-    alert("Error loading audio samples. Please check that sample files are in the 'samples/' folder with correct names.");
+    alert("Error loading audio samples. Some samples may be missing.");
   }
+}
+
+// NEW: Voice recording functions - FIXED TO ACTUALLY STORE AND PLAYBACK
+function startVoiceRecording() {
+  if (!micInput || isRecordingVoice) return;
+  
+  isRecordingVoice = true;
+  recordingStartTime = millis();
+  
+  console.log("🎤 Recording voice...");
+  
+  // Stop any existing voice loop first
+  if (voiceGrainPlayer && voiceGrainPlayer.state === 'started') {
+    voiceGrainPlayer.stop();
+  }
+  
+  // Record for up to 4 seconds
+  micRecorder = new Tone.Recorder();
+  micInput.connect(micRecorder);
+  micRecorder.start();
+  
+  setTimeout(() => {
+    if (isRecordingVoice) {
+      stopVoiceRecording();
+    }
+  }, maxRecordingTime);
+}
+
+async function stopVoiceRecording() {
+  if (!isRecordingVoice || !micRecorder) return;
+  
+  isRecordingVoice = false;
+  
+  try {
+    const recording = await micRecorder.stop();
+    console.log("✓ Voice recorded, creating stored loop...");
+    
+    // Disconnect live mic from effects chain during playback
+    if (micInput && voiceEffectsChain) {
+      micInput.disconnect(voiceEffectsChain);
+    }
+    
+    // Create a NEW grain player with the stored recording
+    if (voiceGrainPlayer) {
+      voiceGrainPlayer.dispose(); // Clean up old one
+    }
+    
+    voiceGrainPlayer = new Tone.GrainPlayer({
+      url: recording,
+      loop: true,
+      grainSize: 0.15,
+      overlap: 0.2,
+      volume: -9
+    });
+    
+    // Connect to effects chain for glitchy playback
+    voiceGrainPlayer.connect(voiceEffectsChain);
+    voiceGrainPlayer.start();
+    voiceVisualsActive = true;
+    
+    console.log("🔄 Voice loop started from stored recording");
+    
+    // Auto-stop after 30 seconds and reconnect live mic
+    setTimeout(() => {
+      if (voiceGrainPlayer) {
+        voiceGrainPlayer.stop();
+        voiceGrainPlayer.dispose();
+        voiceVisualsActive = false;
+        // Reconnect live mic for next recording
+        if (micInput && voiceEffectsChain) {
+          micInput.connect(voiceEffectsChain);
+        }
+        console.log("Voice loop ended, live mic reconnected");
+      }
+    }, 30000);
+    
+  } catch (error) {
+    console.error("Error processing voice recording:", error);
+  }
+}
+
+// NEW: Enhanced pop hook trigger with glitch effects
+function triggerPopHook() {
+  if (!popHookSampler || !popHookSampler.loaded || popHookActive) return;
+  
+  popHookActive = true;
+  console.log("🎵 Triggering enhanced glitchy pop hook...");
+  
+  // Main hook playback with heavy glitch effects
+  const currentChord = chordProgression[currentChordIndex];
+  
+  // Create glitch effects chain for main hook
+  const bitCrusher = new Tone.BitCrusher(6);
+  const chorus = new Tone.Chorus(4, 2.5, 0.5);
+  const tremolo = new Tone.Tremolo(8, 0.7);
+  const filter = new Tone.Filter(1200, "lowpass");
+  
+  // Chain the effects
+  popHookSampler.chain(bitCrusher, chorus, tremolo, filter, masterReverb);
+  
+  // Play main hook (slow vaporwave version)
+  popHookSampler.triggerAttackRelease(currentChord[0], "4m", "+0", 0.7);
+  
+  // NEW: Sped up glitchy snippet
+  const speedyHook = new Tone.GrainPlayer({
+    url: popHookSampler.buffer,
+    loop: true,
+    grainSize: 0.05, // Very small grains for glitch
+    overlap: 0.1,
+    playbackRate: 2.5, // Much faster
+    volume: -12
+  });
+  
+  // Glitch effects for speedy version
+  const speedyBitCrusher = new Tone.BitCrusher(4);
+  const speedyReverb = new Tone.Reverb({
+    roomSize: 0.9,
+    decay: 2,
+    wet: 0.8
+  });
+  const speedyDelay = new Tone.PingPongDelay("16n", 0.3);
+  
+  speedyHook.chain(speedyBitCrusher, speedyDelay, speedyReverb, masterGain);
+  
+  // Start speedy hook with delay
+  setTimeout(() => {
+    if (speedyHook) {
+      speedyHook.start();
+      console.log("🚀 Speedy glitch hook started");
+    }
+  }, 2000); // Start after 2 seconds
+  
+  setTimeout(() => {
+    popHookActive = false;
+    
+    // Clean up effects
+    setTimeout(() => {
+      bitCrusher.dispose();
+      chorus.dispose();
+      tremolo.dispose();
+      filter.dispose();
+      speedyHook.dispose();
+      speedyBitCrusher.dispose();
+      speedyReverb.dispose();
+      speedyDelay.dispose();
+    }, 1000);
+    
+  }, 16000); // 4 measures
 }
 
 function startAmbientMusic() {
   if (isPlaying || !samplesLoaded) return;
   isPlaying = true;
   
-  console.log("Starting sample-based ambient music...");
+  console.log("Starting enhanced ambient music...");
   if (window.updateStatus) window.updateStatus("Playing");
   
-  // Bass chords (OVERLAPPING for longer sustain)
+  // Bass chords
   Tone.getTransport().scheduleRepeat((time) => {
     const currentChord = chordProgression[currentChordIndex];
-    // Play bass root note with overlap for sustained effect
-    bassSampler.triggerAttackRelease(currentChord[0], "4m", time, 0.8); // MUCH LONGER - 4 measures
+    bassSampler.triggerAttackRelease(currentChord[0], "2m", time, 0.8);
     
-    // Add a second trigger halfway through for sustain
     Tone.getTransport().schedule((time2) => {
-      bassSampler.triggerAttackRelease(currentChord[0], "2m", time2, 0.4); // Quieter overlap
+      bassSampler.triggerAttackRelease(currentChord[0], "1m", time2, 0.4);
     }, `+1m`);
     
     currentChordIndex = (currentChordIndex + 1) % chordProgression.length;
   }, "2m");
   
-  // Arpeggio patterns (ACTUAL QUICK ARPEGGIOS - multiple notes)
-  const quickArpeggioPatterns = [
-    ["C3", "Eb3", "G3", "Bb3", "C4", "Bb3", "G3", "Eb3"], // Bb minor arpeggio
-    ["F3", "Ab3", "C4", "Eb4", "F4", "Eb4", "C4", "Ab3"], // F minor arpeggio  
-    ["Db3", "F3", "Ab3", "C4", "Db4", "C4", "Ab3", "F3"], // Db major arpeggio
-    ["Eb3", "G3", "Bb3", "D4", "Eb4", "D4", "Bb3", "G3"]  // Eb minor arpeggio
-  ];
+  // Fast repeating melodies + strings + chanting
+  let melodyChordIndex = 0;
   
-  let arpeggioNoteIndex = 0;
-  let arpeggioPatternIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
-    const currentPattern = quickArpeggioPatterns[arpeggioPatternIndex];
-    const note = currentPattern[arpeggioNoteIndex % currentPattern.length];
+    const currentMelody = repeatingMelodies[melodyChordIndex];
+    const currentStrings = stringsMelodies[melodyChordIndex];
+    const currentChanting = hymnalChanting[melodyChordIndex];
     
-    if (arpeggioSampler && arpeggioSampler.loaded) {
-      // Quick arpeggio notes - shorter duration for rapid feel
-      arpeggioSampler.triggerAttackRelease(note, "8n", time, 0.5);
-      console.log(`🎵 Quick arpeggio: ${note} (pattern ${arpeggioPatternIndex})`);
-    }
+    // Arpeggio melody
+    currentMelody.notes.forEach((note, index) => {
+      const noteTime = currentMelody.timings[index];
+      
+      if (noteTime < 4.0) {
+        Tone.getTransport().schedule((scheduleTime) => {
+          if (arpeggioSampler && arpeggioSampler.loaded) {
+            const velocity = 0.4 + Math.random() * 0.1;
+            arpeggioSampler.triggerAttackRelease(note, "16n", scheduleTime, velocity);
+          }
+        }, `+${noteTime * 0.5}`);
+      }
+    });
     
-    arpeggioNoteIndex++;
-    if (arpeggioNoteIndex % 8 === 0) { // Every 2 measures (8 eighth notes)
-      arpeggioNoteIndex = 0;
-      arpeggioPatternIndex = (arpeggioPatternIndex + 1) % quickArpeggioPatterns.length;
-    }
-  }, "8n"); // 8th notes for quick arpeggio feel
+    // Strings melody
+    currentStrings.notes.forEach((note, index) => {
+      const stringTime = currentStrings.timings[index];
+      
+      Tone.getTransport().schedule((scheduleTime) => {
+        if (stringsSampler && stringsSampler.loaded) {
+          const velocity = 0.5 + Math.random() * 0.1;
+          stringsSampler.triggerAttackRelease(note, currentStrings.duration, scheduleTime, velocity);
+        }
+      }, `+${stringTime * 0.5}`);
+    });
+    
+    // Hymnal chanting
+    currentChanting.notes.forEach((note, index) => {
+      const chantTime = currentChanting.timings[index];
+      
+      Tone.getTransport().schedule((scheduleTime) => {
+        if (vocalChoirSampler && vocalChoirSampler.loaded) {
+          const velocity = 0.7 + Math.random() * 0.1;
+          vocalChoirSampler.triggerAttackRelease(note, currentChanting.duration, scheduleTime, velocity);
+        }
+      }, `+${chantTime}`);
+    });
+    
+    melodyChordIndex = (melodyChordIndex + 1) % repeatingMelodies.length;
+  }, "2m");
   
-  // Subtle kick and clap rhythm (low volume)
+  // Subtle kick and clap rhythm
   Tone.getTransport().scheduleRepeat((time) => {
     kickSampler.triggerAttackRelease("C1", "8n", time, 0.3);
-  }, "1m"); // Every measure
+  }, "1m");
   
   Tone.getTransport().scheduleRepeat((time) => {
-    if (Math.random() > 0.7) { // Sparse claps
+    if (Math.random() > 0.7) {
       clapSampler.triggerAttackRelease("C3", "8n", time, 0.2);
     }
-  }, "2n"); // Half notes
+  }, "2n");
   
-  // Lush strings (SYNCED WITH BASS TIMING)
+  // Strings with evolving LFO
   const stringChords = [
-    ["G3", "D4", "G4"],    // G major chord
-    ["C3", "G3", "C4"],    // C major chord  
-    ["D3", "A3", "D4"],    // D major chord
-    ["F3", "C4", "F4"]     // F major chord
+    ["G3", "D4", "G4"],
+    ["C3", "G3", "C4"],
+    ["D3", "A3", "D4"],
+    ["F3", "C4", "F4"]
   ];
   let stringChordIndex = 0;
   Tone.getTransport().scheduleRepeat((time) => {
     const chord = stringChords[stringChordIndex % stringChords.length];
     if (stringsSampler && stringsSampler.loaded) {
-      // Play all notes of the chord simultaneously, synced with bass
       chord.forEach((note, index) => {
         stringsSampler.triggerAttackRelease(note, "2m", time + (index * 0.05), 0.6);
       });
-      console.log(`🎻 String chord: ${chord.join(', ')} - SYNCED with bass`);
     }
     stringChordIndex++;
-  }, "2m"); // SYNCED with bass chord changes (every 2 measures)
+  }, "2m");
   
-  // Vocal choir (FULL 3+ SECOND DURATION + LOWER OCTAVES)
-  const choirNotes = ["F4", "Ab4", "Bb4", "C5"];
-  let choirIndex = 0;
-  Tone.getTransport().scheduleRepeat((time) => {
-    if (Math.random() > 0.3) { // 70% chance
-      const note = choirNotes[choirIndex % choirNotes.length];
-      if (vocalChoirSampler && vocalChoirSampler.loaded) {
-        // Play original note
-        vocalChoirSampler.triggerAttackRelease(note, "4m", time, 0.8);
-        
-        // Add lower octaves for richness (same sample, pitched down)
-        const lowerNote1 = note.slice(0, -1) + (parseInt(note.slice(-1)) - 1); // One octave down
-        const lowerNote2 = note.slice(0, -1) + (parseInt(note.slice(-1)) - 2); // Two octaves down
-        
-        vocalChoirSampler.triggerAttackRelease(lowerNote1, "4m", time + 0.1, 0.6); // Slightly delayed
-        vocalChoirSampler.triggerAttackRelease(lowerNote2, "4m", time + 0.2, 0.4); // More delayed, quieter
-        
-        console.log(`👥 Playing vocal choir: ${note} + ${lowerNote1} + ${lowerNote2} (rich harmonies)`);
-      }
-      choirIndex++;
-    }
-  }, "2m"); // Every 2 measures to avoid overlap
-  
-  // Start percussion loop and sidechained noise - PROPERLY SYNCED
+  // Start loops
   if (percussionLoop && percussionLoop.loaded) {
     percussionLoop.sync().start(0);
-    console.log("✓ Percussion loop started synced");
   }
   
   if (sidechainedNoise && sidechainedNoise.loaded) {
-    // Start exactly on measure boundary for perfect sync
     sidechainedNoise.sync().start("0:0:0");
-    console.log("✓ Sidechained noise started synced at measure start");
+  }
+  
+  if (glitchBeat && glitchBeat.loaded) {
+    glitchBeat.sync().start("0:0:0");
   }
   
   Tone.getTransport().start();
 }
 
-// Breakcore function using gabber kick
 function startBreakcore() {
   if (isBreakcoreActive || !samplesLoaded || !breakcoreKick || !breakcoreKick.loaded) {
-    if (!breakcoreKick || !breakcoreKick.loaded) {
-      console.log("Breakcore kick not loaded yet");
-    }
     return;
   }
   
@@ -584,7 +940,6 @@ function startBreakcore() {
   
   console.log("🔥 GABBER BREAKCORE ACTIVATED!");
   
-  // Rapid gabber kick pattern
   const breakcorePattern = [
     0, 0.125, 0.25, 0.5, 0.625, 0.75, 1.0, 1.125, 1.25, 1.375, 1.5, 1.625, 1.75, 1.875,
     2.0, 2.0625, 2.125, 2.1875, 2.25, 2.3125, 2.375, 2.4375, 2.5, 2.5625, 2.625, 2.75, 2.875,
@@ -593,7 +948,7 @@ function startBreakcore() {
   
   breakcorePattern.forEach(beat => {
     Tone.getTransport().schedule((time) => {
-      if (breakcoreKick && breakcoreKick.loaded) { // Double check before triggering
+      if (breakcoreKick && breakcoreKick.loaded) {
         breakcoreKick.triggerAttackRelease("C1", "32n", time, 0.9);
       }
     }, `+${beat}`);
@@ -613,15 +968,21 @@ function stopMusic() {
     Tone.getTransport().stop();
     Tone.getTransport().cancel();
     
-    // PROPERLY stop all players
     if (percussionLoop && percussionLoop.state === 'started') {
       percussionLoop.stop();
-      console.log("✓ Percussion loop stopped");
     }
     
     if (sidechainedNoise && sidechainedNoise.state === 'started') {
       sidechainedNoise.stop();
-      console.log("✓ Sidechained noise stopped");
+    }
+    
+    if (glitchBeat && glitchBeat.state === 'started') {
+      glitchBeat.stop();
+    }
+    
+    if (voiceGrainPlayer && voiceGrainPlayer.state === 'started') {
+      voiceGrainPlayer.stop();
+      voiceVisualsActive = false;
     }
     
     // Release all samplers
@@ -638,23 +999,102 @@ function stopMusic() {
   }
 }
 
-// Gesture calculation functions (same as before)
+// All gesture calculation functions remain the same...
 function calculateJumpAmount(pose) {
   const leftAnkle = pose.keypoints[27];
   const rightAnkle = pose.keypoints[28];
-  const nose = pose.keypoints[0];
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  const leftHip = pose.keypoints[23];
+  const rightHip = pose.keypoints[24];
   
-  if (leftAnkle && rightAnkle && nose &&
-      leftAnkle.confidence > 0.5 && rightAnkle.confidence > 0.5 && nose.confidence > 0.5) {
+  if (leftAnkle && rightAnkle && leftShoulder && rightShoulder && leftHip && rightHip &&
+      leftAnkle.confidence > 0.6 && rightAnkle.confidence > 0.6 && 
+      leftShoulder.confidence > 0.6 && rightShoulder.confidence > 0.6) {
     
+    // Calculate body center and dimensions
+    const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+    const avgHipY = (leftHip.y + rightHip.y) / 2;
     const avgAnkleY = (leftAnkle.y + rightAnkle.y) / 2;
-    const expectedGroundLevel = height * 0.9;
-    const jumpHeight = expectedGroundLevel - avgAnkleY;
+    const bodyHeight = avgAnkleY - avgShoulderY;
     
-    return constrain(jumpHeight / 200, 0, 2);
+    // More lenient body proportion check
+    if (bodyHeight < 150 || bodyHeight > 600) {
+      return 0;
+    }
+    
+    // Check if person is reasonably centered
+    const avgBodyX = (leftShoulder.x + rightShoulder.x) / 2;
+    if (avgBodyX < width * 0.2 || avgBodyX > width * 0.8) {
+      return 0;
+    }
+    
+    // IMPROVED: Use hip-to-ankle distance for more stable ground reference
+    const hipToAnkleDistance = avgAnkleY - avgHipY;
+    const expectedHipToAnkle = bodyHeight * 0.4; // Roughly 40% of body height
+    
+    // Calculate elevation based on hip-ankle ratio
+    const elevationRatio = (expectedHipToAnkle - hipToAnkleDistance) / expectedHipToAnkle;
+    const rawJump = constrain(elevationRatio * 2, 0, 2); // Scale up for sensitivity
+    
+    // Add to jump history for consistency
+    jumpHistory.push(rawJump);
+    if (jumpHistory.length > 3) { // Shorter history for faster response
+      jumpHistory.shift();
+    }
+    
+    // Only consider it a jump if consistently elevated
+    const avgJump = jumpHistory.reduce((sum, val) => sum + val, 0) / jumpHistory.length;
+    const consistentJump = jumpHistory.filter(j => j > 0.3).length >= 2; // 2 out of 3 frames
+    
+    console.log(`Jump calc: hip-ankle=${hipToAnkleDistance.toFixed(1)}, expected=${expectedHipToAnkle.toFixed(1)}, raw=${rawJump.toFixed(2)}, avg=${avgJump.toFixed(2)}, consistent=${consistentJump}`);
+    
+    return consistentJump ? avgJump : 0;
   }
   
   return 0;
+}
+
+// NEW: Calculate blob tracking bounding box
+function calculateBlobTracking(pose) {
+  if (!pose.keypoints) return;
+  
+  let minX = width, maxX = 0, minY = height, maxY = 0;
+  let validPoints = 0;
+  
+  // Find bounding box of all visible keypoints
+  for (let i = 0; i < pose.keypoints.length; i++) {
+    const keypoint = pose.keypoints[i];
+    if (keypoint && keypoint.confidence > 0.3) {
+      minX = Math.min(minX, keypoint.x);
+      maxX = Math.max(maxX, keypoint.x);
+      minY = Math.min(minY, keypoint.y);
+      maxY = Math.max(maxY, keypoint.y);
+      validPoints++;
+    }
+  }
+  
+  if (validPoints > 5) { // Need enough points for valid tracking
+    bodyBoundingBox = {
+      x: minX - 20, // Add padding
+      y: minY - 20,
+      width: (maxX - minX) + 40,
+      height: (maxY - minY) + 40
+    };
+    blobTrackingActive = true;
+    
+    // Update tracking points for glitch effect
+    trackingPoints = [];
+    for (let i = 0; i < 8; i++) {
+      trackingPoints.push({
+        x: minX + (maxX - minX) * Math.random(),
+        y: minY + (maxY - minY) * Math.random(),
+        age: 0
+      });
+    }
+  } else {
+    blobTrackingActive = false;
+  }
 }
 
 function calculateArmStretch(pose) {
@@ -670,6 +1110,11 @@ function calculateArmStretch(pose) {
     const centerX = (leftShoulder.x + rightShoulder.x) / 2;
     const centerY = (leftShoulder.y + rightShoulder.y) / 2;
     bodyCenter = {x: centerX, y: centerY};
+    
+    bodyCenterSmooth.x = lerp(bodyCenterSmooth.x, centerX, 0.15);
+    bodyCenterSmooth.y = lerp(bodyCenterSmooth.y, centerY, 0.15);
+    
+    bodyRotation = atan2(rightShoulder.y - leftShoulder.y, rightShoulder.x - leftShoulder.x);
     
     const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
     const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
@@ -731,15 +1176,13 @@ function calculateMotionAmount(currentPose) {
   let totalMotion = 0;
   let validPoints = 0;
   
-  // MORE SELECTIVE: Only track major body points for "whole body" motion
-  // Exclude head/face points that move when sitting
-  const majorBodyPoints = [11, 12, 23, 24]; // Shoulders and hips only
+  const majorBodyPoints = [11, 12, 23, 24];
   
   for (let i of majorBodyPoints) {
     const current = currentPose.keypoints[i];
     const previous = prevPose.keypoints[i];
     
-    if (current && previous && current.confidence > 0.7 && previous.confidence > 0.7) { // Higher confidence
+    if (current && previous && current.confidence > 0.7 && previous.confidence > 0.7) {
       const distance = dist(current.x, current.y, previous.x, previous.y);
       totalMotion += distance;
       validPoints++;
@@ -747,13 +1190,12 @@ function calculateMotionAmount(currentPose) {
   }
   
   previousPoses.push(currentPose);
-  if (previousPoses.length > 8) { // Longer history for stability
+  if (previousPoses.length > 8) {
     previousPoses.shift();
   }
   
-  // MUCH HIGHER threshold - requires significant body movement
   const avgMotion = validPoints > 0 ? totalMotion / validPoints : 0;
-  motionAmountRaw = constrain(avgMotion / 50, 0, 1); // INCREASED threshold from 25 to 50
+  motionAmountRaw = constrain(avgMotion / 20, 0, 1);
   
   return motionAmountRaw;
 }
@@ -763,42 +1205,44 @@ function updateAudioFilters() {
   
   armStretchSmooth = lerp(armStretchSmooth, armStretch, 0.1);
   
-  // Motion smoothing with slower decay
   if (motionAmountRaw > motionAmountSmooth) {
     motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, 0.3);
   } else {
     motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, motionDecayRate);
   }
   
-  // NEW: Motion averaging over longer period for percussion
   motionHistory.push(motionAmountSmooth);
-  if (motionHistory.length > 30) { // Keep 30 frames (~1 second at 30fps)
+  if (motionHistory.length > 30) {
     motionHistory.shift();
   }
   
-  // Calculate average motion over the past second
   motionAverage = motionHistory.reduce((sum, val) => sum + val, 0) / motionHistory.length;
   
   handHeightSmooth = lerp(handHeightSmooth, handHeight, 0.1);
   
   // ARM STRETCH → BRIGHTNESS FILTER
-  brightnessFreq = map(armStretchSmooth, 0, 1, 200, 4000);
+  brightnessFreq = map(armStretchSmooth, 0, 1, 8000, 500);
   brightnessFilter.frequency.rampTo(brightnessFreq, 0.5);
   
-  // MOTION AVERAGE → PERCUSSION LOOP VOLUME (LESS DISTORTED)
-  const percVol = map(motionAverage, 0, 0.4, -20, -6); // REDUCED max to avoid distortion (-6dB instead of 0dB)
+  // MOTION AVERAGE → PERCUSSION LOOP VOLUME
+  const percVol = map(motionAverage, 0, 0.4, -20, -6);
   if (percussionLoop && percussionLoop.loaded) {
     percussionLoop.volume.rampTo(percVol, 0.3);
-    console.log(`🥁 Percussion volume: ${percVol.toFixed(1)}dB (motion: ${(motionAverage*100).toFixed(0)}%)`);
+  }
+  
+  // MOTION → GLITCH BEAT VOLUME (boosted)
+  const glitchVol = map(palmDirection, 0, 1, 3, 9); // BOOSTED range: +3dB to +9dB
+  if (glitchBeat && glitchBeat.loaded) {
+    glitchBeat.volume.rampTo(glitchVol, 0.3);
   }
   
   // PALM DIRECTION → HIGH-PASS FILTER
   palmFreq = map(palmDirection, 0, 1, 200, 3000);
   palmFilter.frequency.rampTo(palmFreq, 0.8);
   
-  // NEW: HAND HEIGHT → EXTREME GATING EFFECT (more stuttery at extremes)
-  const gateDepth = map(Math.abs(handHeightSmooth), 0, 1, 0, 0.95); // INCREASED max from 0.9 to 0.95
-  const gateRate = map(Math.abs(handHeightSmooth), 0, 1, 1, 20); // INCREASED max from 12 to 20
+  // HAND HEIGHT → GATING EFFECT
+  const gateDepth = map(Math.abs(handHeightSmooth), 0, 1, 0, 0.95);
+  const gateRate = map(Math.abs(handHeightSmooth), 0, 1, 1, 20);
   
   if (stringsGate) {
     stringsGate.depth.rampTo(gateDepth, 0.2);
@@ -807,13 +1251,19 @@ function updateAudioFilters() {
   
   if (choirGate) {
     choirGate.depth.rampTo(gateDepth, 0.2);
-    choirGate.frequency.rampTo(gateRate * 1.5, 0.2); // Even faster for choir (up to 30Hz)
+    choirGate.frequency.rampTo(gateRate * 1.5, 0.2);
   }
   
-  // HAND HEIGHT → HAND RAISE SYNTH TRIGGER (make sure this still works!)
+  // HAND HEIGHT → HARMONIC HAND RAISE SYNTH + KICK
   if (handHeightSmooth > 0.4 && millis() - lastTwinkleTime > 1000) {
-    triggerHandRaiseSynth();
+    triggerHarmonicHandRaiseSynth();
     lastTwinkleTime = millis();
+  }
+  
+  // HAND HEIGHT → JERSEY CLUB KICK
+  if (handHeightSmooth > 0.6 && millis() - lastJumpTime > 4000 && !jerseyClubActive) {
+    startJerseyClubKick();
+    lastJumpTime = millis();
   }
   
   // JUMP → BREAKCORE TRIGGER
@@ -823,68 +1273,406 @@ function updateAudioFilters() {
   }
 }
 
-function triggerHandRaiseSynth() {
+// NEW: Harmonic hand raise synth (fits better with the music)
+function triggerHarmonicHandRaiseSynth() {
   if (!audioInitialized) return;
   
+  const handRangeNormalized = map(handHeightSmooth, 0.4, 1.0, 0.3, 1.0);
+  const kickVelocity = constrain(handRangeNormalized, 0.3, 1.0);
+  
+  // Trigger kick
+  if (kickSampler && kickSampler.loaded) {
+    kickSampler.triggerAttackRelease("C1", "8n", "+0", kickVelocity);
+  }
+  
   if (handRaiseSynth && handRaiseSynth.loaded) {
-    // Trigger the thick synth screech sample
-    handRaiseSynth.triggerAttackRelease("C3", "1n", "+0", 0.9);
-    console.log("🔥 Hand Raise Synth Sample Triggered!");
+    // Play in the current chord key for harmony
+    const currentChord = chordProgression[currentChordIndex % chordProgression.length];
+    const baseNote = currentChord[0]; // Get root note
+    handRaiseSynth.triggerAttackRelease(baseNote.replace('2', '4'), "1n", "+0", kickVelocity);
   } else {
-    console.log("⚠️ Hand raise sample not loaded - using AGGRESSIVE fallback synth");
-    
-    // MUCH MORE AGGRESSIVE fallback - the "cool hard synth" sound
-    const aggressiveSynth = new Tone.FMSynth({
-      harmonicity: 8,
-      modulationIndex: 25, // High modulation for harsh sound
+    // HARMONIC fallback synth in current key
+    const harmonicSynth = new Tone.Synth({
       oscillator: { type: "sawtooth" },
       envelope: { 
-        attack: 0.005, 
-        decay: 0.1, 
-        sustain: 0.8, 
-        release: 1.2 
-      },
-      modulation: { type: "square" },
-      modulationEnvelope: {
-        attack: 0.01,
-        decay: 0.05,
-        sustain: 0.9,
-        release: 0.3
+        attack: 0.01, 
+        decay: 0.2, 
+        sustain: 0.6, 
+        release: 1.0 
       }
     });
     
-    // Add distortion for extra aggression
-    const distortion = new Tone.Distortion(0.8);
-    const filter = new Tone.Filter({
-      frequency: 1500,
-      type: "highpass",
-      Q: 12
+    const harmonicFilter = new Tone.Filter({
+      frequency: 2000,
+      type: "lowpass",
+      Q: 8
     });
     
-    aggressiveSynth.chain(distortion, filter, Tone.Destination);
+    harmonicSynth.connect(harmonicFilter);
+    harmonicFilter.connect(masterGain);
     
-    // Play multiple notes for thickness
-    aggressiveSynth.triggerAttackRelease("C5", "4n", "+0", 0.8);
-    aggressiveSynth.triggerAttackRelease("G5", "4n", "+0.05", 0.6);
-    aggressiveSynth.triggerAttackRelease("C6", "4n", "+0.1", 0.7);
+    // Play chord tones for harmony
+    const currentChord = chordProgression[currentChordIndex % chordProgression.length];
+    currentChord.forEach((note, index) => {
+      const harmNote = note.replace('2', '5').replace('3', '5'); // Move to 5th octave
+      harmonicSynth.triggerAttackRelease(harmNote, "4n", `+${index * 0.02}`, kickVelocity * 0.8);
+    });
     
-    console.log("🔥 AGGRESSIVE HARD SYNTH triggered! (FM + distortion + filter)");
-    
-    // Clean up after 3 seconds
     setTimeout(() => {
-      aggressiveSynth.dispose();
-      distortion.dispose();
-      filter.dispose();
+      harmonicSynth.dispose();
+      harmonicFilter.dispose();
     }, 3000);
   }
 }
 
-// Visual system (same as before)
+// NEW: Voice visualization (floating meandering waveform)
+function drawVoiceVisualization() {
+  if (!voiceVisualsActive) return;
+  
+  push();
+  
+  // Update floating position (slow meandering movement)
+  if (frameCount % 120 === 0) { // Change target every 2 seconds
+    voiceWaveTarget.x = random(width * 0.2, width * 0.8);
+    voiceWaveTarget.y = random(height * 0.2, height * 0.8);
+  }
+  
+  // Smooth movement toward target
+  voiceWavePosition.x = lerp(voiceWavePosition.x, voiceWaveTarget.x, 0.02);
+  voiceWavePosition.y = lerp(voiceWavePosition.y, voiceWaveTarget.y, 0.02);
+  
+  // Create waveform points
+  if (voiceWavePoints.length === 0) {
+    for (let i = 0; i < 40; i++) {
+      voiceWavePoints.push({x: 0, y: 0});
+    }
+  }
+  
+  // Update waveform points with audio-reactive motion
+  for (let i = 0; i < voiceWavePoints.length; i++) {
+    let angle = (i / voiceWavePoints.length) * TWO_PI * 2;
+    let baseRadius = 60;
+    
+    // Add voice activity modulation
+    let voiceModulation = isRecordingVoice ? 20 : 10;
+    let timeModulation = sin(millis() * 0.01 + i * 0.3) * voiceModulation;
+    let radius = baseRadius + timeModulation;
+    
+    voiceWavePoints[i].x = voiceWavePosition.x + cos(angle) * radius;
+    voiceWavePoints[i].y = voiceWavePosition.y + sin(angle) * radius;
+  }
+  
+  // Draw the floating waveform
+  stroke(255, 100, 255, 150); // Purple semi-transparent
+  strokeWeight(1.5);
+  noFill();
+  
+  beginShape();
+  for (let i = 0; i < voiceWavePoints.length; i++) {
+    let point = voiceWavePoints[i];
+    
+    // Add small random jitter for organic feel
+    let jitterX = random(-2, 2);
+    let jitterY = random(-2, 2);
+    
+    vertex(point.x + jitterX, point.y + jitterY);
+  }
+  endShape(CLOSE);
+  
+  // Add a second, inner waveform for complexity
+  stroke(255, 100, 255, 80);
+  strokeWeight(1);
+  beginShape();
+  for (let i = 0; i < voiceWavePoints.length; i += 2) {
+    let point = voiceWavePoints[i];
+    let innerX = voiceWavePosition.x + (point.x - voiceWavePosition.x) * 0.6;
+    let innerY = voiceWavePosition.y + (point.y - voiceWavePosition.y) * 0.6;
+    vertex(innerX, innerY);
+  }
+  endShape(CLOSE);
+  
+  // Recording indicator near the waveform
+  if (isRecordingVoice) {
+    fill(255, 50, 50, 200);
+    noStroke();
+    ellipse(voiceWavePosition.x, voiceWavePosition.y - 80, 12, 12);
+    fill(255);
+    textAlign(CENTER);
+    textSize(8);
+    text("REC", voiceWavePosition.x, voiceWavePosition.y - 75);
+  } else if (voiceVisualsActive) {
+    fill(100, 255, 100, 150);
+    noStroke();
+    ellipse(voiceWavePosition.x, voiceWavePosition.y - 80, 8, 8);
+  }
+  
+  textAlign(LEFT); // Reset text alignment
+  pop();
+}
+
+// NEW: Blob tracking visualization (TouchDesigner style) - REFINED
+function drawBlobTracking() {
+  if (!blobTrackingActive) return;
+  
+  push();
+  
+  // Mirror the bounding box to match video flip
+  let mirroredBox = {
+    x: width - (bodyBoundingBox.x + bodyBoundingBox.width),
+    y: bodyBoundingBox.y,
+    width: bodyBoundingBox.width,
+    height: bodyBoundingBox.height
+  };
+  
+  // Main bounding box with subtle glitch effect
+  stroke(255, 255, 255, 180); // White lines as requested
+  strokeWeight(1); // Thinner lines as requested
+  noFill();
+  
+  // Subtle glitchy box effect
+  let glitchOffset = sin(millis() * 0.02) * 2;
+  rect(mirroredBox.x + glitchOffset, mirroredBox.y, mirroredBox.width, mirroredBox.height);
+  
+  // Corner brackets for tech aesthetic - also thinner
+  strokeWeight(1.5);
+  let cornerSize = 15;
+  
+  // Top-left corner
+  line(mirroredBox.x, mirroredBox.y, mirroredBox.x + cornerSize, mirroredBox.y);
+  line(mirroredBox.x, mirroredBox.y, mirroredBox.x, mirroredBox.y + cornerSize);
+  
+  // Top-right corner
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, mirroredBox.x + mirroredBox.width - cornerSize, mirroredBox.y);
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, mirroredBox.x + mirroredBox.width, mirroredBox.y + cornerSize);
+  
+  // Bottom-left corner
+  line(mirroredBox.x, mirroredBox.y + mirroredBox.height, mirroredBox.x + cornerSize, mirroredBox.y + mirroredBox.height);
+  line(mirroredBox.x, mirroredBox.y + mirroredBox.height, mirroredBox.x, mirroredBox.y + mirroredBox.height - cornerSize);
+  
+  // Bottom-right corner
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height, mirroredBox.x + mirroredBox.width - cornerSize, mirroredBox.y + mirroredBox.height);
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height, mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height - cornerSize);
+  
+  // Callout line to center of screen - thinner
+  stroke(255, 255, 255, 120);
+  strokeWeight(0.8);
+  let boxCenterX = mirroredBox.x + mirroredBox.width / 2;
+  let boxCenterY = mirroredBox.y + mirroredBox.height / 2;
+  let screenCenterX = width / 2;
+  let screenCenterY = height / 2;
+  
+  // Stepped callout line (more tech-like)
+  line(boxCenterX, boxCenterY, screenCenterX, boxCenterY);
+  line(screenCenterX, boxCenterY, screenCenterX, screenCenterY);
+  
+  // Info display at screen center
+  fill(255, 255, 255, 180);
+  noStroke();
+  textAlign(CENTER);
+  textSize(10);
+  text(`TRACKING`, screenCenterX, screenCenterY - 8);
+  text(`${mirroredBox.width.toFixed(0)}x${mirroredBox.height.toFixed(0)}`, screenCenterX, screenCenterY + 5);
+  
+  // Removed yellow tracking points as requested - too distracting
+  
+  pop();
+}
+
+// Visual drawing functions remain mostly the same, with additions...
+
+function drawSubtleHandPattern(centerX, centerY, visualScale, reflect = false) {
+  if (!audioAnalyzer) return;
+  
+  push();
+  translate(centerX, centerY);
+  rotate(bodyRotation);
+  if (reflect) scale(-1, 1);
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  stroke(255, 120);
+  strokeWeight(1.0 + visualScale * 0.01);
+  noFill();
+  
+  beginShape();
+  for (let i = 0; i < spectrum.length; i += 3) {
+    let angle = map(i, 0, spectrum.length, 0, TWO_PI);
+    let intensity = (spectrum[i] + 100) / 100;
+    let radius = intensity * visualScale * 60;
+    
+    let x = cos(angle) * radius;
+    let y = sin(angle) * radius;
+    
+    vertex(x, y);
+  }
+  endShape(CLOSE);
+  
+  stroke(255, 80);
+  strokeWeight(0.8);
+  beginShape();
+  for (let i = 0; i < spectrum.length; i += 6) {
+    let angle = map(i, 0, spectrum.length, 0, TWO_PI);
+    let intensity = (spectrum[i] + 100) / 100;
+    let radius = intensity * visualScale * 90;
+    
+    let x = cos(angle) * radius;
+    let y = sin(angle) * radius;
+    
+    vertex(x, y);
+  }
+  endShape();
+  
+  pop();
+}
+
+function drawHandConnections(leftHandX, leftHandY, rightHandX, rightHandY, bodyX, bodyY) {
+  if (!audioAnalyzer) return;
+  
+  const spectrum = audioAnalyzer.getValue();
+  stroke(255, 60);
+  strokeWeight(1.2);
+  
+  if (leftHandX && leftHandY) {
+    for (let i = 0; i <= 20; i++) {
+      let progress = i / 20;
+      let x = lerp(leftHandX, bodyX, progress);
+      let y = lerp(leftHandY, bodyY, progress);
+      
+      let specIndex = Math.floor(map(progress, 0, 1, 0, spectrum.length - 1));
+      let intensity = (spectrum[specIndex] + 100) / 100;
+      let distortion = intensity * 8;
+      
+      x += sin(progress * PI * 4 + millis() * 0.005) * distortion;
+      y += cos(progress * PI * 4 + millis() * 0.005) * distortion;
+      
+      if (i > 0) {
+        let prevProgress = (i - 1) / 20;
+        let prevX = lerp(leftHandX, bodyX, prevProgress);
+        let prevY = lerp(leftHandY, bodyY, prevProgress);
+        let prevSpecIndex = Math.floor(map(prevProgress, 0, 1, 0, spectrum.length - 1));
+        let prevIntensity = (spectrum[prevSpecIndex] + 100) / 100;
+        let prevDistortion = prevIntensity * 8;
+        
+        prevX += sin(prevProgress * PI * 4 + millis() * 0.005) * prevDistortion;
+        prevY += cos(prevProgress * PI * 4 + millis() * 0.005) * prevDistortion;
+        
+        line(prevX, prevY, x, y);
+      }
+    }
+  }
+  
+  if (rightHandX && rightHandY) {
+    for (let i = 0; i <= 20; i++) {
+      let progress = i / 20;
+      let x = lerp(rightHandX, bodyX, progress);
+      let y = lerp(rightHandY, bodyY, progress);
+      
+      let specIndex = Math.floor(map(progress, 0, 1, 0, spectrum.length - 1));
+      let intensity = (spectrum[specIndex] + 100) / 100;
+      let distortion = intensity * 8;
+      
+      x += sin(progress * PI * 4 + millis() * 0.005 + PI) * distortion;
+      y += cos(progress * PI * 4 + millis() * 0.005 + PI) * distortion;
+      
+      if (i > 0) {
+        let prevProgress = (i - 1) / 20;
+        let prevX = lerp(rightHandX, bodyX, prevProgress);
+        let prevY = lerp(rightHandY, bodyY, prevProgress);
+        let prevSpecIndex = Math.floor(map(prevProgress, 0, 1, 0, spectrum.length - 1));
+        let prevIntensity = (spectrum[prevSpecIndex] + 100) / 100;
+        let prevDistortion = prevIntensity * 8;
+        
+        prevX += sin(prevProgress * PI * 4 + millis() * 0.005 + PI) * prevDistortion;
+        prevY += cos(prevProgress * PI * 4 + millis() * 0.005 + PI) * prevDistortion;
+        
+        line(prevX, prevY, x, y);
+      }
+    }
+  }
+}
+
+function drawOscilloscopePatternToBuffer(buffer, centerX, centerY, visualScale) {
+  if (!audioAnalyzer) return;
+  
+  buffer.push();
+  buffer.translate(centerX, centerY);
+  buffer.rotate(bodyRotation);
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  if (visualMode === 0) {
+    drawLissajousScaleToBuffer(buffer, spectrum, visualScale);
+  } else {
+    drawSpectralFlowToBuffer(buffer, spectrum, visualScale);
+  }
+  
+  buffer.pop();
+}
+
+function drawLissajousScaleToBuffer(buffer, spectrum, visualScale) {
+  buffer.stroke(255, 100);
+  buffer.strokeWeight(1 + visualScale * 0.01);
+  buffer.noFill();
+  
+  buffer.beginShape();
+  for (let i = 0; i < spectrum.length - 1; i++) {
+    let x = (spectrum[i] + 100) / 100 * visualScale * 400;
+    let y = (spectrum[i + 1] + 100) / 100 * visualScale * 400;
+    
+    let freqMod = (spectrum[i] + 100) / 100 * visualScale * 100;
+    x += cos(i * 0.05) * freqMod;
+    y += sin(i * 0.05) * freqMod;
+    
+    buffer.vertex(x, y);
+  }
+  buffer.endShape();
+}
+
+function drawSpectralFlowToBuffer(buffer, spectrum, visualScale) {
+  buffer.stroke(255, 120);
+  buffer.strokeWeight(1 + visualScale * 0.005);
+  buffer.noFill();
+  
+  let segments = 16;
+  
+  for (let seg = 0; seg < segments; seg++) {
+    let startIdx = Math.floor((spectrum.length / segments) * seg);
+    let endIdx = Math.floor((spectrum.length / segments) * (seg + 1));
+    
+    let gestureInfluence = (armStretchSmooth + motionAmountSmooth + Math.abs(handHeightSmooth)) / 3;
+    let rotationSpeed = 1 + gestureInfluence * 2;
+    let complexityMod = 1 + palmDirection * 0.3;
+    
+    buffer.beginShape();
+    for (let i = startIdx; i < endIdx; i++) {
+      let progress = map(i, startIdx, endIdx, 0, 1);
+      let intensity = (spectrum[i] + 100) / 100;
+      
+      let baseAngle = map(seg, 0, segments, 0, TWO_PI * rotationSpeed);
+      let flowAngle = baseAngle + progress * PI * complexityMod;
+      
+      let radius = intensity * visualScale * (100 + gestureInfluence * 50);
+      let spiralFactor = progress * gestureInfluence * 0.5;
+      
+      let x = cos(flowAngle) * (radius + spiralFactor * 30);
+      let y = sin(flowAngle) * (radius + spiralFactor * 30);
+      
+      let harmonicFreq = 3 + Math.floor(gestureInfluence * 4);
+      x += cos(flowAngle * harmonicFreq) * intensity * visualScale * (20 + gestureInfluence * 15);
+      y += sin(flowAngle * harmonicFreq) * intensity * visualScale * (20 + gestureInfluence * 15);
+      
+      buffer.vertex(x, y);
+    }
+    buffer.endShape();
+  }
+}
+
 function drawOscilloscopePattern(centerX, centerY, scale) {
   if (!audioAnalyzer) return;
   
   push();
   translate(centerX, centerY);
+  rotate(bodyRotation);
   
   const spectrum = audioAnalyzer.getValue();
   
@@ -983,7 +1771,7 @@ function drawGestureMeters() {
   
   fill(0, 0, 0, 150);
   noStroke();
-  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 7 + 10);
+  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 11 + 10); // More space for new meters
   
   // Arm Stretch Meter
   fill(50);
@@ -992,9 +1780,9 @@ function drawGestureMeters() {
   rect(meterX, meterY, meterWidth * armStretchSmooth, meterHeight);
   fill(255);
   textSize(11);
-  text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness Filter`, meterX, meterY - 3);
+  text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness`, meterX, meterY - 3);
   
-  // Motion Amount Meter - WHOLE BODY MOTION ONLY
+  // Motion Amount Meter
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
@@ -1002,33 +1790,31 @@ function drawGestureMeters() {
   rect(meterX, meterY, meterWidth * motionAverage, meterHeight);
   fill(255);
   
-  // Calculate and display actual percussion volume
   const currentPercVol = map(motionAverage, 0, 0.4, -20, -6);
-  text(`Motion (body): ${(motionAverage * 100).toFixed(0)}% → Perc: ${currentPercVol.toFixed(1)}dB`, meterX, meterY - 3);
+  text(`Motion: ${(motionAverage * 100).toFixed(0)}% → Perc: ${currentPercVol.toFixed(1)}dB`, meterX, meterY - 3);
   
-  // Hand Height Meter (shows trigger threshold)
+  // Hand Height Meter
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
   let handHeightDisplay = map(Math.abs(handHeightSmooth), 0, 1, 0, 1);
   
-  // Show trigger zone
   if (handHeightSmooth > 0.4) {
-    fill(255, 50, 50); // Red when in trigger zone
+    fill(255, 50, 50);
   } else {
     fill(100, 100, 255);
   }
   rect(meterX, meterY, meterWidth * handHeightDisplay, meterHeight);
   
-  // Draw trigger threshold line
   stroke(255, 255, 0);
   strokeWeight(2);
-  let thresholdX = meterX + (meterWidth * 0.4); // 40% threshold
+  let thresholdX = meterX + (meterWidth * 0.4);
   line(thresholdX, meterY, thresholdX, meterY + meterHeight);
   noStroke();
   
   fill(255);
-  text(`Hands: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} ${handHeightSmooth.toFixed(2)} → Synth${handHeightSmooth > 0.4 ? ' TRIGGER!' : ''}`, meterX, meterY - 3);
+  const currentHandVolume = map(handHeightSmooth, 0.4, 1.0, 0.3, 1.0);
+  text(`Hands: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} ${handHeightSmooth.toFixed(2)} → Harmonic Synth${handHeightSmooth > 0.4 ? ' COMBO!' : ''}`, meterX, meterY - 3);
   
   // Palm Direction Meter
   meterY += spacing;
@@ -1037,16 +1823,62 @@ function drawGestureMeters() {
   fill(255, 255, 100);
   rect(meterX, meterY, meterWidth * palmDirection, meterHeight);
   fill(255);
-  text(`Hand Width: ${(palmDirection * 100).toFixed(0)}% → High-Pass Filter`, meterX, meterY - 3);
+  text(`Hand Width: ${(palmDirection * 100).toFixed(0)}% → Filter + Glitch Beat`, meterX, meterY - 3);
   
-  // Jump Detection Meter
+  // Glitch Beat Volume Meter (BOOSTED)
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255, 50, 50);
-  rect(meterX, meterY, meterWidth * (jumpAmount / 2), meterHeight);
+  fill(255, 100, 255);
+  rect(meterX, meterY, meterWidth * palmDirection, meterHeight);
   fill(255);
-  text(`Jump: ${(jumpAmount * 100).toFixed(0)}% → Gabber Breakcore`, meterX, meterY - 3);
+  const currentGlitchVol = map(palmDirection, 0, 1, 3, 9);
+  text(`Glitch Beat: ${(palmDirection * 100).toFixed(0)}% → Vol: ${currentGlitchVol.toFixed(1)}dB (BOOSTED!)`, meterX, meterY - 3);
+  
+  // Jersey Club Kick Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  let handHeightForJersey = map(Math.abs(handHeightSmooth), 0, 1, 0, 1);
+  if (handHeightSmooth > 0.6) {
+    fill(255, 165, 0);
+  } else {
+    fill(100, 150, 255);
+  }
+  rect(meterX, meterY, meterWidth * handHeightForJersey, meterHeight);
+  
+  stroke(255, 165, 0);
+  strokeWeight(2);
+  let jerseyThresholdX = meterX + (meterWidth * 0.6);
+  line(jerseyThresholdX, meterY, jerseyThresholdX, meterY + meterHeight);
+  noStroke();
+  
+  fill(255);
+  text(`Hand Height: ${(handHeightSmooth * 100).toFixed(0)}% → Jersey Club${handHeightSmooth > 0.6 ? ' BOUNCE!' : ''}`, meterX, meterY - 3);
+  
+  // Jump Detection Meter - UPDATED
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  // Show jump threshold line
+  if (jumpAmount > jumpThreshold) {
+    fill(255, 50, 50); // Red when jumping
+  } else {
+    fill(100, 255, 100); // Green normally
+  }
+  rect(meterX, meterY, meterWidth * (jumpAmount / 2), meterHeight);
+  
+  // Draw threshold line
+  stroke(255, 255, 0);
+  strokeWeight(2);
+  let jumpThresholdX = meterX + (meterWidth * (jumpThreshold / 2));
+  line(jumpThresholdX, meterY, jumpThresholdX, meterY + meterHeight);
+  noStroke();
+  
+  fill(255);
+  text(`Jump: ${(jumpAmount * 100).toFixed(0)}% → Gabber Breakcore${jumpAmount > jumpThreshold ? ' ACTIVE!' : ''}`, meterX, meterY - 3);
   
   // Gating Effect Display
   meterY += spacing;
@@ -1058,19 +1890,51 @@ function drawGestureMeters() {
   fill(255);
   text(`Gating Effect: ${(gateAmount * 100).toFixed(0)}% → Strings/Choir Stutter`, meterX, meterY - 3);
   
-  // Sample Status (ENHANCED with specific sample info)
+  // NEW: Voice Recording Meter with feedback warning
   meterY += spacing;
   fill(50);
   rect(meterX, meterY, meterWidth, meterHeight);
   
-  // Check specific critical samples
+  if (isRecordingVoice) {
+    fill(255, 50, 50);
+    let recordProgress = (millis() - recordingStartTime) / maxRecordingTime;
+    rect(meterX, meterY, meterWidth * recordProgress, meterHeight);
+  } else if (voiceVisualsActive) {
+    fill(100, 255, 100);
+    rect(meterX, meterY, meterWidth, meterHeight);
+  }
+  
+  fill(255);
+  let voiceText = isRecordingVoice ? 'RECORDING...' : voiceVisualsActive ? 'LOOPING' : 'SPACE=record (USE HEADPHONES!)';
+  text(`Voice: ${voiceText}`, meterX, meterY - 3);
+  
+  // NEW: Pop Hook Status
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  if (popHookActive) {
+    fill(255, 100, 255);
+    rect(meterX, meterY, meterWidth, meterHeight);
+  }
+  
+  fill(255);
+  text(`Pop Hook: ${popHookActive ? 'PLAYING' : 'Press V to trigger'}`, meterX, meterY - 3);
+  
+  // Sample Status
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
   let arpeggioLoaded = arpeggioSampler && arpeggioSampler.loaded;
   let stringsLoaded = stringsSampler && stringsSampler.loaded;
+  let glitchLoaded = glitchBeat && glitchBeat.loaded;
+  let popLoaded = popHookSampler && popHookSampler.loaded;
   
-  if (arpeggioLoaded && stringsLoaded) {
+  if (arpeggioLoaded && stringsLoaded && glitchLoaded && popLoaded) {
     fill(50, 255, 50);
-  } else if (arpeggioLoaded || stringsLoaded) {
-    fill(255, 255, 50); // Yellow for partial loading
+  } else if (arpeggioLoaded && stringsLoaded && glitchLoaded) {
+    fill(255, 255, 50);
   } else {
     fill(255, 50, 50);
   }
@@ -1079,14 +1943,12 @@ function drawGestureMeters() {
   fill(255);
   
   let statusText = "";
-  if (arpeggioLoaded && stringsLoaded) {
-    statusText = "✓ Arpeggio & Strings Loaded";
-  } else if (arpeggioLoaded) {
-    statusText = "⚠️ Arpeggio OK, Strings Missing";
-  } else if (stringsLoaded) {
-    statusText = "⚠️ Strings OK, Arpeggio Missing";  
+  if (arpeggioLoaded && stringsLoaded && glitchLoaded && popLoaded) {
+    statusText = "✓ All Enhanced Samples Ready";
+  } else if (arpeggioLoaded && stringsLoaded && glitchLoaded) {
+    statusText = "⚠️ Core OK, Pop Hook Missing";
   } else {
-    statusText = "❌ Arpeggio & Strings Missing";
+    statusText = "❌ Key Samples Missing";
   }
   
   text(statusText, meterX, meterY - 3);
@@ -1095,11 +1957,10 @@ function drawGestureMeters() {
 function draw() {
   background(0);
   
-  // MIRRORED video overlay for natural interaction
+  // Video overlay (darker for better graphics visibility)
   push();
-  tint(255, 80);
+  tint(255, 40);
   if (video) {
-    // Mirror the video horizontally
     scale(-1, 1);
     image(video, -width, 0, width, height);
   }
@@ -1124,14 +1985,17 @@ function draw() {
     motionAmountRaw = motionAmount;
     jumpAmount = calculateJumpAmount(pose);
     
+    // NEW: Calculate blob tracking
+    calculateBlobTracking(pose);
+    
     updateAudioFilters();
     
-    // Draw skeleton (also mirrored to match video)
+    // Draw skeleton (higher visibility)
     if (connections && pose.keypoints) {
       push();
-      scale(-1, 1); // Mirror skeleton to match video
-      stroke(255, 30);
-      strokeWeight(0.5);
+      scale(-1, 1);
+      stroke(255, 120);
+      strokeWeight(1.5);
       
       for (let j = 0; j < connections.length; j++) {
         let pointAIndex = connections[j][0];
@@ -1140,34 +2004,108 @@ function draw() {
         let pointB = pose.keypoints[pointBIndex];
         
         if (pointA && pointB && pointA.confidence > 0.1 && pointB.confidence > 0.1) {
-          // Mirror the x coordinates
-          line(-pointA.x, pointA.y, -pointB.x, pointB.y);
+          line(pointA.x, pointA.y, pointB.x, pointB.y);
         }
       }
       pop();
     }
     
-    // Draw oscilloscope pattern (mirror the body center too)
+    // Draw main oscilloscope pattern + trace buffer
     if (audioInitialized && isPlaying && samplesLoaded) {
       let visualScale = map(armStretchSmooth + motionAmountSmooth, 0, 2, 0.8, 2.5);
+      
+      // NEW: Faster fading for cleaner oscilloscope lines
+      // More aggressive fading to prevent blurred shapes
+      let fadeAmount = map(motionAmountSmooth, 0, 0.5, 80, 35); // Faster fading: 80 when still, 35 when moving
+      traceBuffer.fill(0, 0, 0, fadeAmount);
+      traceBuffer.rect(0, 0, width, height);
       
       if (isBreakcoreActive) {
         visualScale *= 1.5;
         push();
-        let mirroredCenterX = width - bodyCenter.x; // Mirror the center position
-        translate(mirroredCenterX, bodyCenter.y);
+        let mirroredCenterX = width - bodyCenterSmooth.x;
+        translate(mirroredCenterX, bodyCenterSmooth.y);
         stroke(255, 0, 0, 100);
         strokeWeight(3);
         noFill();
         let breakRadius = sin(millis() * 0.01) * 50 + 100;
         ellipse(0, 0, breakRadius, breakRadius);
+        
+        traceBuffer.push();
+        traceBuffer.translate(mirroredCenterX, bodyCenterSmooth.y);
+        traceBuffer.stroke(255, 0, 0, 100);
+        traceBuffer.strokeWeight(3);
+        traceBuffer.noFill();
+        traceBuffer.ellipse(0, 0, breakRadius, breakRadius);
+        traceBuffer.pop();
         pop();
       }
       
-      let mirroredCenterX = width - bodyCenter.x; // Mirror the center position
-      drawOscilloscopePattern(mirroredCenterX, bodyCenter.y, visualScale);
+      let mirroredCenterX = width - bodyCenterSmooth.x;
+      
+      // Draw to both main canvas and trace buffer
+      drawOscilloscopePattern(mirroredCenterX, bodyCenterSmooth.y, visualScale);
+      drawOscilloscopePatternToBuffer(traceBuffer, mirroredCenterX, bodyCenterSmooth.y, visualScale);
+      
+      // Draw hands + connecting lines
+      const leftWrist = pose.keypoints[15];
+      const rightWrist = pose.keypoints[16];
+      
+      let leftHandValid = false, rightHandValid = false;
+      let leftHandX = 0, leftHandY = 0, rightHandX = 0, rightHandY = 0;
+      
+      if (leftWrist && leftWrist.confidence > 0.5) {
+        let targetLeftX = width - leftWrist.x;
+        leftHandSmooth.x = lerp(leftHandSmooth.x, targetLeftX, 0.1);
+        leftHandSmooth.y = lerp(leftHandSmooth.y, leftWrist.y, 0.1);
+        
+        let handScale = visualScale * 0.4;
+        drawSubtleHandPattern(leftHandSmooth.x, leftHandSmooth.y, handScale, false);
+        
+        leftHandValid = true;
+        leftHandX = leftHandSmooth.x;
+        leftHandY = leftHandSmooth.y;
+      }
+      
+      if (rightWrist && rightWrist.confidence > 0.5) {
+        let targetRightX = width - rightWrist.x;
+        rightHandSmooth.x = lerp(rightHandSmooth.x, targetRightX, 0.1);
+        rightHandSmooth.y = lerp(rightHandSmooth.y, rightWrist.y, 0.1);
+        
+        let handScale = visualScale * 0.4;
+        drawSubtleHandPattern(rightHandSmooth.x, rightHandSmooth.y, handScale, true);
+        
+        rightHandValid = true;
+        rightHandX = rightHandSmooth.x;
+        rightHandY = rightHandSmooth.y;
+      }
+      
+      // Draw connecting lines
+      if (leftHandValid || rightHandValid) {
+        drawHandConnections(
+          leftHandValid ? leftHandX : null, 
+          leftHandValid ? leftHandY : null,
+          rightHandValid ? rightHandX : null, 
+          rightHandValid ? rightHandY : null,
+          mirroredCenterX, 
+          bodyCenterSmooth.y
+        );
+      }
+      
+      // Draw the trace buffer
+      tint(255, 180);
+      image(traceBuffer, 0, 0);
+      noTint();
+    }
+    
+    // NEW: Draw blob tracking visualization
+    if (blobTrackingActive) {
+      drawBlobTracking();
     }
   }
+  
+  // NEW: Draw voice visualization
+  drawVoiceVisualization();
   
   if (audioInitialized) {
     drawGestureMeters();
@@ -1180,11 +2118,39 @@ function draw() {
   text(`Visual: ${visualModes[visualMode]} (M to change)`, width - 20, height - 20);
   
   textSize(10);
-  text(`Percussion: -25dB to 0dB range (MUCH more dramatic!)`, width - 20, height - 40);
-  text(`Vocals: 3 octaves (F4+F3+F2) for rich harmonies`, width - 20, height - 55);
-  text(`Hand Synth: Aggressive FM+distortion (raise >40%)`, width - 20, height - 70);
-  text(`Yellow line = hand trigger threshold`, width - 20, height - 85);
+  text(`NEW: Stored voice loops + floating waveforms + glitchy pop effects`, width - 20, height - 40);
+  text(`NEW: Refined blob tracking + faster oscilloscope fading`, width - 20, height - 55);
+  text(`SPACE=Record voice, V=Glitchy pop hook, B=Toggle blob tracking`, width - 20, height - 70);
   textAlign(LEFT);
+}
+
+// NEW: Enhanced window resize handling
+function windowResized() {
+  let canvasWidth = windowWidth;
+  let canvasHeight = windowHeight;
+  
+  // Maintain 16:9 aspect ratio
+  if (canvasWidth / canvasHeight > 16/9) {
+    canvasWidth = canvasHeight * (16/9);
+  } else {
+    canvasHeight = canvasWidth * (9/16);
+  }
+  
+  resizeCanvas(canvasWidth, canvasHeight);
+  
+  if (traceBuffer) {
+    traceBuffer.resizeCanvas(canvasWidth, canvasHeight);
+  }
+  
+  if (video) {
+    video.size(canvasWidth, canvasHeight);
+  }
+  
+  // Update voice wave position to stay centered
+  if (voiceWavePosition) {
+    voiceWavePosition = {x: width / 2, y: height / 2};
+    voiceWaveTarget = {x: width / 2, y: height / 2};
+  }
 }
 
 async function startAppInteraction() {
@@ -1197,18 +2163,17 @@ async function startAppInteraction() {
     try {
       await initializeAudio();
       
-      // Wait for samples to load
       const checkSamples = setInterval(() => {
         if (samplesLoaded) {
           clearInterval(checkSamples);
           startAmbientMusic();
-          console.log("✓ Sample-based music started");
+          console.log("✓ Enhanced music started");
         }
       }, 100);
       
     } catch (error) {
       console.error("Audio initialization failed:", error);
-      alert("Failed to initialize sample-based audio. Please check that sample files are in the 'samples/' folder.");
+      alert("Failed to initialize enhanced audio system.");
     }
   } else {
     if (isPlaying) {
@@ -1238,43 +2203,72 @@ function keyPressed() {
     startBreakcore();
   }
   
-  // NEW: Test arpeggio sample manually at NATURAL pitch
+  if (key.toLowerCase() === 'j' && audioInitialized && !jerseyClubActive) {
+    console.log("🏀 TESTING JERSEY CLUB PATTERN");
+    startJerseyClubKick();
+  }
+  
+  // NEW: Voice recording
+  if (key === ' ' && audioInitialized) {
+    if (!isRecordingVoice) {
+      startVoiceRecording();
+    } else {
+      stopVoiceRecording();
+    }
+  }
+  
+  // NEW: Pop hook trigger
+  if (key.toLowerCase() === 'v' && audioInitialized) {
+    triggerPopHook();
+  }
+  
+  // NEW: Toggle blob tracking
+  if (key.toLowerCase() === 'b') {
+    blobTrackingActive = !blobTrackingActive;
+    console.log('Blob tracking:', blobTrackingActive ? 'ON' : 'OFF');
+  }
+  
+  // Test functions
   if (key.toLowerCase() === 'a' && audioInitialized) {
-    console.log("🎵 TESTING ARPEGGIO SAMPLE AT NATURAL PITCH");
-    console.log("Expected: Soft fluttering 7-second sample");
-    console.log("Playing at C3 (natural pitch) for FULL duration");
+    console.log("🎵 TESTING ENHANCED MELODY SYSTEM");
     
     if (arpeggioSampler && arpeggioSampler.loaded) {
-      // Play at natural pitch with full duration - no pitch shifting!
-      arpeggioSampler.triggerAttackRelease("C3", "8m", "+0", 0.8); // 8 measures = plenty of time
-    } else {
-      console.log("❌ Arpeggio sampler not loaded!");
+      const testMelody = repeatingMelodies[0];
+      testMelody.notes.forEach((note, index) => {
+        const timing = testMelody.timings[index];
+        setTimeout(() => {
+          const velocity = 0.4 + Math.random() * 0.1;
+          arpeggioSampler.triggerAttackRelease(note, "16n", "+0", velocity);
+        }, timing * 125);
+      });
+      
+      if (stringsSampler && stringsSampler.loaded) {
+        const testStrings = stringsMelodies[0];
+        testStrings.notes.forEach((note, index) => {
+          const timing = testStrings.timings[index];
+          setTimeout(() => {
+            const velocity = 0.5 + Math.random() * 0.1;
+            stringsSampler.triggerAttackRelease(note, testStrings.duration, "+0", velocity);
+          }, timing * 125);
+        });
+      }
+      
+      if (vocalChoirSampler && vocalChoirSampler.loaded) {
+        const testChanting = hymnalChanting[0];
+        testChanting.notes.forEach((note, index) => {
+          const timing = testChanting.timings[index];
+          setTimeout(() => {
+            const velocity = 0.7 + Math.random() * 0.1;
+            vocalChoirSampler.triggerAttackRelease(note, testChanting.duration, "+0", velocity);
+          }, timing * 250);
+        });
+      }
     }
   }
   
-  // NEW: Test vocal sample with harmonies
-  if (key.toLowerCase() === 'v' && audioInitialized) {
-    console.log("👥 TESTING VOCAL SAMPLE WITH LOWER OCTAVE HARMONIES");
-    if (vocalChoirSampler && vocalChoirSampler.loaded) {
-      // Test the harmonic layering
-      vocalChoirSampler.triggerAttackRelease("F4", "8m", "+0", 0.8);   // Original
-      vocalChoirSampler.triggerAttackRelease("F3", "8m", "+0.1", 0.6); // One octave down
-      vocalChoirSampler.triggerAttackRelease("F2", "8m", "+0.2", 0.4); // Two octaves down
-      console.log("Playing F4 + F3 + F2 harmonies for rich vocal texture");
-    } else {
-      console.log("❌ Vocal sampler not loaded!");
-    }
-  }
-  
-  // NEW: Test strings sample manually  
-  if (key.toLowerCase() === 's' && audioInitialized) {
-    console.log("🎻 TESTING STRINGS SAMPLE MANUALLY");
-    if (stringsSampler && stringsSampler.loaded) {
-      console.log("Playing strings sample at max volume...");
-      stringsSampler.triggerAttackRelease("G3", "2m", "+0", 1.0);
-    } else {
-      console.log("❌ Strings sampler not loaded!");
-    }
+  if (key.toLowerCase() === 'h' && audioInitialized) {
+    console.log("🔥 TESTING HARMONIC HAND RAISE SYNTH");
+    triggerHarmonicHandRaiseSynth();
   }
 }
 
