@@ -16,7 +16,7 @@ let percussionLoop, sidechainedNoise;
 let breakcoreKick;
 let glitchBeat;
 
-// NEW: Mic input and vocal processing
+// FIXED: Mic input - NO LIVE FEEDBACK
 let micInput;
 let micRecorder;
 let voiceLoop;
@@ -24,11 +24,18 @@ let voiceGrainPlayer;
 let voiceEffectsChain;
 let isRecordingVoice = false;
 let recordingStartTime = 0;
-let maxRecordingTime = 4000; // 4 seconds max
+let maxRecordingTime = 6000; // 6 seconds
 
-// NEW: Pop sample hook (for New Jeans OMG style)
+// Enhanced granular synthesis for New Jeans samples
 let popHookSampler;
 let popHookActive = false;
+let granularDecaySystem;
+let decayStartTime = 0;
+let decayDuration = 60000; // 60 seconds for full decay cycle
+
+// NEW: Pose trigger detection for New Jeans sample
+let newJeansPoseActive = false;
+let lastNewJeansTrigger = 0;
 
 // Effects
 let brightnessFilter, motionFilter, palmFilter, masterReverb, masterDelay, masterDistortion;
@@ -48,31 +55,7 @@ let jerseyClubActive = false;
 let jerseyClubStartTime = 0;
 let jerseyClubDuration = 4000;
 
-function startJerseyClubKick() {
-  if (jerseyClubActive || !kickSampler || !kickSampler.loaded) return;
-  
-  jerseyClubActive = true;
-  jerseyClubStartTime = millis();
-  
-  console.log("🏀 JERSEY CLUB KICK PATTERN!");
-  
-  const jerseyPattern = [0, 0.125, 0.25, 0.375, 0.5, 0.75, 1.0, 1.125, 1.25, 1.5, 1.75];
-  
-  jerseyPattern.forEach(beat => {
-    Tone.getTransport().schedule((time) => {
-      if (kickSampler && kickSampler.loaded) {
-        kickSampler.triggerAttackRelease("C1", "32n", time, 0.8);
-      }
-    }, `+${beat}`);
-  });
-  
-  setTimeout(() => {
-    jerseyClubActive = false;
-    console.log("Jersey club kick ended");
-  }, jerseyClubDuration);
-}
-
-// Movement tracking
+// Movement tracking - ENHANCED for hips
 let previousPoses = [];
 let armStretch = 0;
 let motionAmount = 0;
@@ -85,15 +68,20 @@ let handHeightSmooth = 0;
 let palmDirection = 0;
 let lastTwinkleTime = 0;
 
+// NEW: Hip motion tracking
+let hipMotionAmount = 0;
+let hipMotionSmooth = 0;
+let previousHipPosition = {x: 0, y: 0};
+
 let motionHistory = [];
 let motionAverage = 0;
 
-// Jump detection - FIXED CALCULATION
+// Jump detection
 let jumpAmount = 0;
-let jumpThreshold = 0.4; // LOWERED from 0.8 - more sensitive
+let jumpThreshold = 0.55;
 let lastJumpTime = 0;
 let jumpHistory = [];
-let lastGroundLevel = 0; // Track consistent ground level
+let baselineBodyY = 0;
 
 // Audio parameters
 let brightnessFreq = 400;
@@ -112,21 +100,22 @@ let traceBuffer;
 // Voice visualization
 let voiceWaveform = [];
 let voiceVisualsActive = false;
-
-// NEW: Floating voice visualization
 let voiceWavePosition = {x: 0, y: 0};
 let voiceWaveTarget = {x: 0, y: 0};
 let voiceWavePoints = [];
 
-// NEW: Blob tracking system
+// Blob tracking system
 let bodyBoundingBox = {x: 0, y: 0, width: 0, height: 0};
 let trackingPoints = [];
 let blobTrackingActive = false;
 
+// ENHANCED: Hand tracking for new visuals
 let leftHandSmooth = {x: 0, y: 0};
 let rightHandSmooth = {x: 0, y: 0};
+let handDistance = 0;
+let handDistanceSmooth = 0;
 
-// Sample paths - UPDATED WITH NEW SAMPLES
+// Sample paths
 const samplePaths = {
   bass: "samples/ZEN_SIC_bass_synth_sub_one_shot_vibecity_C.wav",
   arpeggio: "samples/Srm_Crystal_falls2.wav",
@@ -140,16 +129,15 @@ const samplePaths = {
   handRaise: "samples/FSS_RKHSOD_150_synth_screech_loop_gatedshortfour.wav",
   breakcoreKick: "samples/FSS_SHDEV1_Hard_Kick_Whiteroom_B.wav",
   glitchBeat: "samples/RU_TD_135_textures_fx_glitch_minimal.wav",
-  // NEW: Add a pop hook sample (you'll need to add this file)
-  popHook: "samples/newjeans_omg_hook_processed.wav" // Processed version of New Jeans hook
+  popHook: "samples/newjeans_omg_hook_processed.wav"
 };
 
-// Chord progression (Bb minor key to match New Jeans OMG transposed)
+// Chord progression (Bb minor key)
 const chordProgression = [
-  ["Bb2", "D3", "F3", "Ab3"],   // Bb minor 7
-  ["F2", "Ab2", "C3", "Eb3"],   // F minor 7  
-  ["Db3", "F3", "Ab3", "C4"],   // Db major 7
-  ["Eb2", "G2", "Bb2", "D3"]    // Eb minor 7
+  ["Bb2", "D3", "F3", "Ab3"],
+  ["F2", "Ab2", "C3", "Eb3"],
+  ["Db3", "F3", "Ab3", "C4"],
+  ["Eb2", "G2", "Bb2", "D3"]
 ];
 
 // Energetic repeating melodies
@@ -176,7 +164,7 @@ const repeatingMelodies = [
   }
 ];
 
-// Hymnal vocal chanting patterns (in Bb minor key)
+// Hymnal vocal chanting patterns
 const hymnalChanting = [
   {
     notes: ["Bb4", "F4"],
@@ -184,7 +172,7 @@ const hymnalChanting = [
     duration: "2m"
   },
   {
-    notes: ["F4", "C5"],  
+    notes: ["F4", "C5"],
     timings: [1.0, 3.0],
     duration: "2m"
   },
@@ -227,11 +215,9 @@ const stringsMelodies = [
 let currentChordIndex = 0;
 
 function setup() {
-  // FULL SCREEN SETUP - maintain aspect ratio
   let canvasWidth = windowWidth;
   let canvasHeight = windowHeight;
   
-  // Maintain 16:9 aspect ratio for video compatibility
   if (canvasWidth / canvasHeight > 16/9) {
     canvasWidth = canvasHeight * (16/9);
   } else {
@@ -239,55 +225,66 @@ function setup() {
   }
   
   createCanvas(canvasWidth, canvasHeight);
-  
-  // Create trace buffer with same dimensions
   traceBuffer = createGraphics(canvasWidth, canvasHeight);
   
-  // Mobile detection
   const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
   
+  console.log("🎥 Setting up video capture...");
+  
   if (isMobile) {
-    console.log("Mobile device detected");
+    console.log("📱 Mobile device detected");
     showMobileInstructions();
-    video = createCapture(VIDEO, videoReady);
-    video.size(canvasWidth, canvasHeight);
+    video = createCapture({
+      video: {
+        width: 640,
+        height: 480,
+        facingMode: "user"
+      }
+    }, videoReady);
   } else {
-    video = createCapture(VIDEO, videoReady);
-    video.size(canvasWidth, canvasHeight);
+    console.log("💻 Desktop device detected");
+    video = createCapture({
+      video: {
+        width: 1280,
+        height: 960,
+        facingMode: "user"
+      }
+    }, videoReady);
   }
   
-  video.hide();
-  
-  console.log('Creating bodyPose...');
-  try {
-    bodyPose = ml5.bodyPose('BlazePose', modelReady);
-  } catch (error) {
-    console.error('Error creating bodyPose:', error);
+  if (video) {
+    video.hide();
+    console.log("✓ Video capture created");
   }
   
-  // Initialize voice wave position
   voiceWavePosition = {x: width / 2, y: height / 2};
   voiceWaveTarget = {x: width / 2, y: height / 2};
   
-  console.log("ENHANCED IDM POSE CONTROLLER - FINAL VERSION");
-  console.log("✓ FIXED: Voice now stores and plays back recordings");
-  console.log("✓ NEW: Floating meandering voice waveform visualization");
-  console.log("✓ ENHANCED: Pop hook with glitchy effects + sped up snippets");
-  console.log("✓ REFINED: Thinner white blob tracking (removed yellow dots)");
-  console.log("✓ IMPROVED: Faster oscilloscope fading for cleaner lines");
-  console.log("⚠️  USE HEADPHONES to prevent mic feedback!");
-  console.log("SPACE=Voice recording, V=Glitchy pop hook, B=Blob tracking");
+  console.log("🤖 Creating ML5 bodyPose model...");
+  try {
+    bodyPose = ml5.bodyPose('BlazePose', modelReady);
+    console.log("✓ ML5 bodyPose creation initiated");
+  } catch (error) {
+    console.error('❌ Error creating bodyPose:', error);
+  }
+  
+  console.log("ENHANCED TRANCE-DECAY INSTALLATION");
+  console.log("✓ FIXED: Mic only records on spacebar (no live feedback)");
+  console.log("✓ NEW: Hand-to-hand visual connections");
+  console.log("✓ NEW: Hip motion tracking with body aura");
+  console.log("✓ NEW: Enhanced granular synthesis with burial-style decay");
+  console.log("✓ NEW: Color-coded hand height visualization");
 }
 
 function modelReady() {
-  console.log('✓ BlazePose model loaded successfully!');
+  console.log('🤖 BlazePose model loaded successfully!');
   modelLoaded = true;
   
   try {
     connections = bodyPose.getSkeleton();
     console.log('✓ Skeleton connections loaded:', connections ? connections.length : 'none');
   } catch (error) {
-    console.error('Error getting skeleton:', error);
+    console.error('⚠️ Error getting skeleton, using fallback:', error);
     connections = [
       [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
       [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28]
@@ -295,13 +292,16 @@ function modelReady() {
   }
   
   if (video && video.elt && video.elt.readyState === 4) {
+    console.log("✓ Video is ready, starting pose detection");
     startPoseDetection();
   }
 }
 
 function videoReady() {
-  console.log('✓ Video ready');
+  console.log('🎥 Video ready callback triggered');
+  
   if (modelLoaded && !poseDetectionStarted) {
+    console.log("✓ Model already loaded, starting pose detection now");
     startPoseDetection();
   }
 }
@@ -309,13 +309,14 @@ function videoReady() {
 function startPoseDetection() {
   if (poseDetectionStarted || !modelLoaded || !video) return;
   
-  console.log('Starting pose detection...');
+  console.log('🚀 Starting pose detection...');
+  
   try {
     bodyPose.detectStart(video, gotPoses);
     poseDetectionStarted = true;
-    console.log('✓ Pose detection started successfully');
+    console.log('✅ Pose detection started successfully');
   } catch (error) {
-    console.error('Error starting pose detection:', error);
+    console.error('❌ Error starting pose detection:', error);
   }
 }
 
@@ -332,15 +333,15 @@ function showMobileInstructions() {
       max-width: 300px;
     `;
     instructionDiv.innerHTML = `
-      <h2>🎵 Enhanced IDM Controller</h2>
-      <p>Voice + Movement + Glitch</p>
+      <h2>🌀 Trance-Decay</h2>
+      <p>Movement + Voice + Decay</p>
       <p><strong>TAP TO START</strong></p>
       <p style="font-size: 12px; margin-top: 20px;">
         • Allow camera + mic access<br>
-        • <strong>USE HEADPHONES!</strong><br>
         • Turn up volume<br>
-        • Move and speak to control music<br>
-        • Now with blob tracking + voice loops!
+        • Move hands and body to control sound<br>
+        • SPACEBAR to record voice loops<br>
+        • Experience Burial-style granular decay
       </p>
     `;
     document.body.appendChild(instructionDiv);
@@ -352,45 +353,38 @@ async function initializeAudio() {
   
   console.log("Initializing enhanced audio system...");
   
-  const isMobile = /Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-  
   try {
     if (Tone.context.state !== 'running') {
       await Tone.context.resume();
     }
     await Tone.start();
     console.log("✓ Tone.js started successfully");
-    
   } catch (error) {
     console.error("Audio initialization error:", error);
-    if (isMobile) {
-      alert(`Mobile audio failed. Please:\n1. Turn up volume\n2. Turn off silent mode\n3. Use Chrome or Safari`);
-    }
     return;
   }
   
-  // Create master gain and analyzer
   masterGain = new Tone.Gain(1).toDestination();
-  dryGain = new Tone.Gain(1).connect(masterGain); // Direct path for drums
+  dryGain = new Tone.Gain(1).connect(masterGain);
   audioAnalyzer = new Tone.Analyser('fft', 512);
   masterGain.connect(audioAnalyzer);
   
-  // NEW: Initialize microphone input with feedback prevention
+  // FIXED: Initialize microphone WITHOUT live feedback
   try {
     micInput = new Tone.UserMedia();
     await micInput.open();
-    console.log("✓ Microphone access granted");
+    console.log("✓ Microphone access granted - NO LIVE FEEDBACK");
     
-    // FEEDBACK PREVENTION: Add noise gate and aggressive filtering
-    const voiceGate = new Tone.Gate(-30, 0.1); // Gate at -30dB to prevent feedback
-    const voiceHighPass = new Tone.Filter(300, "highpass"); // Remove low freq feedback
-    const voiceCompressor = new Tone.Compressor(-24, 3); // Compress to control levels
-    const voiceDelay = new Tone.FeedbackDelay("8n", 0.4); // Reduced feedback
-    const voiceDistortion = new Tone.Distortion(0.3); // Reduced distortion
-    const voiceFilter = new Tone.Filter(800, "lowpass");
-    const voiceBitCrusher = new Tone.BitCrusher(4);
+    // Create effects chain but DON'T connect mic yet
+    const voiceGate = new Tone.Gate(-35, 0.05);
+    const voiceHighPass = new Tone.Filter(400, "highpass");
+    const voiceCompressor = new Tone.Compressor(-30, 2);
+    const voiceDelay = new Tone.FeedbackDelay("8n", 0.3);
+    const voiceDistortion = new Tone.Distortion(0.2);
+    const voiceFilter = new Tone.Filter(1200, "lowpass");
+    const voiceBitCrusher = new Tone.BitCrusher(6);
     
-    voiceEffectsChain = micInput.connect(voiceGate);
+    voiceEffectsChain = voiceGate;
     voiceGate.connect(voiceHighPass);
     voiceHighPass.connect(voiceCompressor);
     voiceCompressor.connect(voiceDistortion);
@@ -399,21 +393,42 @@ async function initializeAudio() {
     voiceFilter.connect(voiceDelay);
     voiceDelay.connect(masterGain);
     
-    // Create grain player for voice loops
-    voiceGrainPlayer = new Tone.GrainPlayer({
-      grainSize: 0.1,
-      overlap: 0.1,
-      volume: -18 // Quieter to prevent feedback
-    }).connect(voiceEffectsChain);
-    
-    console.log("✓ Voice processing chain created with feedback prevention");
-    console.warn("⚠️ USE HEADPHONES to prevent microphone feedback!");
+    console.log("✓ Voice processing chain ready (mic disconnected until recording)");
     
   } catch (error) {
     console.warn("Microphone not available:", error);
   }
   
-  // LFO for arpeggio flutter  
+  // Create granular decay system for enhanced burial-style processing
+  granularDecaySystem = {
+    grainPlayer: null,
+    reverb: new Tone.Reverb({
+      roomSize: 0.9,
+      decay: 8,
+      wet: 0.6
+    }),
+    delay: new Tone.FeedbackDelay({
+      delayTime: "8n.",
+      feedback: 0.7,
+      wet: 0.4
+    }),
+    filter: new Tone.Filter({
+      frequency: 2000,
+      type: "lowpass",
+      rolloff: -24,
+      Q: 2
+    }),
+    bitCrusher: new Tone.BitCrusher(6),
+    chorus: new Tone.Chorus(4, 2.5, 0.5)
+  };
+  
+  // Chain the granular effects
+  granularDecaySystem.filter.connect(granularDecaySystem.bitCrusher);
+  granularDecaySystem.bitCrusher.connect(granularDecaySystem.chorus);
+  granularDecaySystem.chorus.connect(granularDecaySystem.delay);
+  granularDecaySystem.delay.connect(granularDecaySystem.reverb);
+  granularDecaySystem.reverb.connect(masterGain);
+  
   arpeggioLFO = new Tone.LFO({
     frequency: 6,
     type: "sine",
@@ -429,7 +444,6 @@ async function initializeAudio() {
   
   arpeggioLFO.connect(arpeggioFlutterFilter.frequency);
   
-  // Create effects chain
   masterDistortion = new Tone.Distortion({
     distortion: 0.1,
     wet: 0.2
@@ -451,7 +465,6 @@ async function initializeAudio() {
   masterDelay.connect(masterReverb);
   masterReverb.connect(masterGain);
   
-  // Filter chain
   brightnessFilter = new Tone.Filter({
     frequency: 400,
     type: "lowpass",
@@ -473,7 +486,6 @@ async function initializeAudio() {
     Q: 3
   }).connect(motionFilter);
   
-  // Gating effects
   stringsGate = new Tone.Tremolo({
     frequency: 4,
     depth: 0
@@ -484,7 +496,6 @@ async function initializeAudio() {
     depth: 0
   }).connect(palmFilter);
   
-  // Evolving LFO for strings
   stringsLFO = new Tone.LFO({
     frequency: 0.2,
     type: "sine",
@@ -492,7 +503,6 @@ async function initializeAudio() {
     max: 0.8
   }).start();
   
-  // Load samples
   await loadSamples();
   
   Tone.getTransport().bpm.value = 125;
@@ -504,7 +514,6 @@ async function loadSamples() {
   console.log("Loading samples...");
   
   try {
-    // BASS SAMPLER
     bassSampler = new Tone.Sampler({
       urls: {
         "C2": samplePaths.bass
@@ -515,7 +524,6 @@ async function loadSamples() {
       curve: "exponential"
     }).connect(brightnessFilter);
     
-    // ARPEGGIO SAMPLER - quieter
     arpeggioSampler = new Tone.Sampler({
       urls: {
         "C3": samplePaths.arpeggio
@@ -534,7 +542,6 @@ async function loadSamples() {
       }
     });
     
-    // BELL SAMPLER
     bellSampler = new Tone.Sampler({
       urls: {
         "D4": samplePaths.bell
@@ -542,7 +549,6 @@ async function loadSamples() {
       volume: -6
     }).connect(masterReverb);
     
-    // VOCAL CHOIR SAMPLER - very loud
     vocalChoirSampler = new Tone.Sampler({
       urls: {
         "F4": samplePaths.vocalChoir
@@ -555,31 +561,28 @@ async function loadSamples() {
       }
     }).connect(choirGate);
     
-    // KICK SAMPLER - dry path
     kickSampler = new Tone.Sampler({
       urls: {
         "C1": samplePaths.kick
       },
       volume: -6,
       onload: () => {
-        console.log("✓ Kick loaded - connecting to dry gain");
+        console.log("✓ Kick loaded");
         kickSampler.connect(dryGain);
       }
     });
     
-    // CLAP SAMPLER - dry path
     clapSampler = new Tone.Sampler({
       urls: {
         "C3": samplePaths.clap
       },
       volume: -12,
       onload: () => {
-        console.log("✓ Clap loaded - connecting to dry gain");
+        console.log("✓ Clap loaded");
         clapSampler.connect(dryGain);
       }
     });
     
-    // STRINGS SAMPLER with evolving LFO
     stringsSampler = new Tone.Sampler({
       urls: {
         "G3": samplePaths.strings
@@ -595,7 +598,6 @@ async function loadSamples() {
       }
     }).connect(stringsGate);
     
-    // HAND RAISE SYNTH - NEW: Harmonic version
     handRaiseSynth = new Tone.Sampler({
       urls: {
         "C3": samplePaths.handRaise
@@ -603,7 +605,6 @@ async function loadSamples() {
       volume: -6
     }).connect(palmFilter);
     
-    // BREAKCORE KICK
     breakcoreKick = new Tone.Sampler({
       urls: {
         "C1": samplePaths.breakcoreKick
@@ -614,7 +615,6 @@ async function loadSamples() {
       }
     }).connect(masterDistortion);
     
-    // PERCUSSION LOOP
     percussionLoop = new Tone.Player({
       url: samplePaths.percussionLoop,
       loop: true,
@@ -624,7 +624,6 @@ async function loadSamples() {
       }
     }).connect(motionFilter);
     
-    // SIDECHAINED NOISE
     sidechainedNoise = new Tone.Player({
       url: samplePaths.sidechainedNoise,
       loop: true,
@@ -635,29 +634,30 @@ async function loadSamples() {
       }
     }).connect(palmFilter);
     
-    // GLITCH BEAT - MUCH LOUDER NOW
     glitchBeat = new Tone.Player({
       url: samplePaths.glitchBeat,
       loop: true,
-      volume: 3, // BOOSTED from 0 to +3dB for better audibility
+      volume: 3,
       onload: () => {
-        console.log("✓ Glitchy minimal beat loaded - BOOSTED VOLUME");
-        glitchBeat.connect(dryGain); // Connect to dry gain for clarity
+        console.log("✓ Glitchy minimal beat loaded");
+        glitchBeat.connect(dryGain);
       }
     });
     
-    // NEW: POP HOOK SAMPLER (New Jeans OMG style)
-    popHookSampler = new Tone.Sampler({
-      urls: {
-        "Bb3": samplePaths.popHook // Assuming processed to Bb minor
-      },
+    // ENHANCED: Pop hook with granular synthesis
+    popHookSampler = new Tone.GrainPlayer({
+      url: samplePaths.popHook,
+      grainSize: 0.2,
+      overlap: 0.5,
       volume: -3,
-      attack: 0.05,
-      release: 2,
       onload: () => {
-        console.log("✓ Pop hook sample loaded");
+        console.log("✓ Pop hook sample loaded with granular synthesis");
+        popHookSampler.connect(granularDecaySystem.filter);
+      },
+      onerror: (error) => {
+        console.error("❌ Pop hook sample failed to load:", error);
       }
-    }).connect(masterReverb);
+    });
     
     await Tone.loaded();
     samplesLoaded = true;
@@ -665,34 +665,46 @@ async function loadSamples() {
     
   } catch (error) {
     console.error("Error loading samples:", error);
-    alert("Error loading audio samples. Some samples may be missing.");
   }
 }
 
-// NEW: Voice recording functions - FIXED TO ACTUALLY STORE AND PLAYBACK
+// FIXED: Voice recording - only when spacebar pressed
 function startVoiceRecording() {
   if (!micInput || isRecordingVoice) return;
   
-  isRecordingVoice = true;
-  recordingStartTime = millis();
+  const nextBeat = Tone.getTransport().nextSubdivision("4n");
   
-  console.log("🎤 Recording voice...");
-  
-  // Stop any existing voice loop first
-  if (voiceGrainPlayer && voiceGrainPlayer.state === 'started') {
-    voiceGrainPlayer.stop();
-  }
-  
-  // Record for up to 4 seconds
-  micRecorder = new Tone.Recorder();
-  micInput.connect(micRecorder);
-  micRecorder.start();
-  
-  setTimeout(() => {
-    if (isRecordingVoice) {
-      stopVoiceRecording();
+  Tone.getTransport().schedule((time) => {
+    isRecordingVoice = true;
+    recordingStartTime = millis();
+    
+    console.log("🎤 Recording voice (NO LIVE FEEDBACK)...");
+    
+    if (voiceGrainPlayer && voiceGrainPlayer.state === 'started') {
+      voiceGrainPlayer.stop();
+      voiceGrainPlayer.disconnect();
     }
-  }, maxRecordingTime);
+    
+    // ONLY connect mic during recording (not before)
+    if (micInput && voiceEffectsChain) {
+      micInput.connect(voiceEffectsChain);
+      console.log("Mic connected ONLY for recording");
+    }
+    
+    micRecorder = new Tone.Recorder();
+    if (micInput) {
+      micInput.connect(micRecorder);
+      micRecorder.start(time);
+    }
+    
+    const stopTime = time + Tone.Time("2m").toSeconds();
+    Tone.getTransport().schedule(() => {
+      if (isRecordingVoice) {
+        stopVoiceRecording();
+      }
+    }, stopTime);
+    
+  }, nextBeat);
 }
 
 async function stopVoiceRecording() {
@@ -702,119 +714,1195 @@ async function stopVoiceRecording() {
   
   try {
     const recording = await micRecorder.stop();
-    console.log("✓ Voice recorded, creating stored loop...");
+    micRecorder.dispose();
+    console.log("✓ Voice recorded, disconnecting mic...");
     
-    // Disconnect live mic from effects chain during playback
-    if (micInput && voiceEffectsChain) {
-      micInput.disconnect(voiceEffectsChain);
+    // IMMEDIATELY disconnect mic to prevent feedback
+    if (micInput) {
+      micInput.disconnect();
+      console.log("✓ Mic disconnected - no more live feedback");
     }
     
-    // Create a NEW grain player with the stored recording
     if (voiceGrainPlayer) {
-      voiceGrainPlayer.dispose(); // Clean up old one
+      voiceGrainPlayer.dispose();
     }
     
-    voiceGrainPlayer = new Tone.GrainPlayer({
-      url: recording,
-      loop: true,
-      grainSize: 0.15,
-      overlap: 0.2,
-      volume: -9
+    const audioBuffer = new Tone.ToneAudioBuffer(recording);
+    
+    await new Promise((resolve) => {
+      audioBuffer.onload = resolve;
     });
     
-    // Connect to effects chain for glitchy playback
-    voiceGrainPlayer.connect(voiceEffectsChain);
-    voiceGrainPlayer.start();
+    voiceGrainPlayer = new Tone.GrainPlayer({
+      grainSize: 0.125,
+      overlap: 0.25,
+      volume: -6
+    });
+    
+    voiceGrainPlayer.buffer = audioBuffer;
+    
+    const voiceTestFilter = new Tone.Filter(1000, "highpass");
+    const voiceTestGain = new Tone.Gain(2);
+    
+    voiceGrainPlayer.connect(voiceTestFilter);
+    voiceTestFilter.connect(voiceTestGain);
+    voiceTestGain.connect(masterGain);
+    
+    const nextBeat = Tone.getTransport().nextSubdivision("4n");
+    voiceGrainPlayer.loop = true;
+    voiceGrainPlayer.sync().start(nextBeat);
     voiceVisualsActive = true;
     
-    console.log("🔄 Voice loop started from stored recording");
+    console.log("🔄 VOICE LOOP STARTED (mic stays disconnected)");
     
-    // Auto-stop after 30 seconds and reconnect live mic
-    setTimeout(() => {
+    const stopTime = nextBeat + Tone.Time("8m").toSeconds();
+    Tone.getTransport().schedule(() => {
       if (voiceGrainPlayer) {
         voiceGrainPlayer.stop();
         voiceGrainPlayer.dispose();
+        voiceTestFilter.dispose();
+        voiceTestGain.dispose();
         voiceVisualsActive = false;
-        // Reconnect live mic for next recording
-        if (micInput && voiceEffectsChain) {
-          micInput.connect(voiceEffectsChain);
-        }
-        console.log("Voice loop ended, live mic reconnected");
+        console.log("Voice loop ended");
       }
-    }, 30000);
+    }, stopTime);
     
   } catch (error) {
     console.error("Error processing voice recording:", error);
+    if (micInput) {
+      micInput.disconnect();
+    }
   }
 }
 
-// NEW: Enhanced pop hook trigger with glitch effects
-function triggerPopHook() {
+// ENHANCED: Granular synthesis with burial-style decay
+function triggerEnhancedPopHook() {
   if (!popHookSampler || !popHookSampler.loaded || popHookActive) return;
   
   popHookActive = true;
-  console.log("🎵 Triggering enhanced glitchy pop hook...");
+  decayStartTime = millis();
+  console.log("🌀 Triggering burial-style granular decay...");
   
-  // Main hook playback with heavy glitch effects
-  const currentChord = chordProgression[currentChordIndex];
+  const nextMeasure = Tone.getTransport().nextSubdivision("1m");
   
-  // Create glitch effects chain for main hook
-  const bitCrusher = new Tone.BitCrusher(6);
-  const chorus = new Tone.Chorus(4, 2.5, 0.5);
-  const tremolo = new Tone.Tremolo(8, 0.7);
-  const filter = new Tone.Filter(1200, "lowpass");
+  Tone.getTransport().schedule((time) => {
+    // Start the granular decay cycle
+    popHookSampler.loop = true;
+    popHookSampler.playbackRate = 1.0; // Start at normal speed
+    popHookSampler.sync().start(time);
+    
+    console.log("🎵 Granular decay cycle started - 60 seconds of evolution");
+    
+    // Schedule the decay evolution over 60 seconds
+    const evolutionInterval = setInterval(() => {
+      if (!popHookActive) {
+        clearInterval(evolutionInterval);
+        return;
+      }
+      
+      const elapsed = millis() - decayStartTime;
+      const progress = Math.min(elapsed / decayDuration, 1.0);
+      
+      // Evolving parameters for burial-style decay
+      const grainSize = map(progress, 0, 1, 0.1, 0.8); // Larger grains over time
+      const playbackRate = map(progress, 0, 1, 1.0, 0.3); // Slower over time
+      const filterFreq = map(progress, 0, 1, 2000, 300); // Darker over time
+      const reverbWet = map(progress, 0, 1, 0.3, 0.9); // More reverb
+      const delayFeedback = map(progress, 0, 1, 0.4, 0.8); // More delay
+      const bitCrushLevel = Math.floor(map(progress, 0, 1, 8, 3)); // More crushed
+      
+      // Apply the evolving parameters
+      if (popHookSampler) {
+        popHookSampler.grainSize = grainSize;
+        popHookSampler.playbackRate = playbackRate;
+      }
+      
+      if (granularDecaySystem.filter) {
+        granularDecaySystem.filter.frequency.rampTo(filterFreq, 2);
+      }
+      if (granularDecaySystem.reverb) {
+        granularDecaySystem.reverb.wet.rampTo(reverbWet, 2);
+      }
+      if (granularDecaySystem.delay) {
+        granularDecaySystem.delay.feedback.rampTo(delayFeedback, 2);
+      }
+      if (granularDecaySystem.bitCrusher) {
+        granularDecaySystem.bitCrusher.bits = bitCrushLevel;
+      }
+      
+      console.log(`🌀 Decay progress: ${(progress * 100).toFixed(1)}% - Grain: ${grainSize.toFixed(2)}, Rate: ${playbackRate.toFixed(2)}, Filter: ${filterFreq.toFixed(0)}Hz`);
+      
+      if (progress >= 1.0) {
+        // Fade to pure atmospheric noise
+        setTimeout(() => {
+          if (popHookSampler) {
+            popHookSampler.stop();
+            popHookActive = false;
+            console.log("🌀 Decay cycle complete - sample dissolved into noise");
+          }
+        }, 5000);
+        clearInterval(evolutionInterval);
+      }
+      
+    }, 1000); // Update every second
+    
+  }, nextMeasure);
+}
+
+function startJerseyClubKick() {
+  if (jerseyClubActive || !kickSampler || !kickSampler.loaded) return;
   
-  // Chain the effects
-  popHookSampler.chain(bitCrusher, chorus, tremolo, filter, masterReverb);
+  jerseyClubActive = true;
+  jerseyClubStartTime = millis();
   
-  // Play main hook (slow vaporwave version)
-  popHookSampler.triggerAttackRelease(currentChord[0], "4m", "+0", 0.7);
+  console.log("🏀 JERSEY CLUB KICK PATTERN!");
   
-  // NEW: Sped up glitchy snippet
-  const speedyHook = new Tone.GrainPlayer({
-    url: popHookSampler.buffer,
-    loop: true,
-    grainSize: 0.05, // Very small grains for glitch
-    overlap: 0.1,
-    playbackRate: 2.5, // Much faster
-    volume: -12
-  });
+  const nextMeasure = Tone.getTransport().nextSubdivision("1m");
   
-  // Glitch effects for speedy version
-  const speedyBitCrusher = new Tone.BitCrusher(4);
-  const speedyReverb = new Tone.Reverb({
-    roomSize: 0.9,
-    decay: 2,
-    wet: 0.8
-  });
-  const speedyDelay = new Tone.PingPongDelay("16n", 0.3);
+  Tone.getTransport().schedule((time) => {
+    const jerseyPattern = [
+      "0:0:0", "0:1:0", "0:2:0", "0:3:0",
+      "1:0:0", "1:1:2", "1:2:0", "1:3:2",
+      "2:0:0", "2:0:3", "2:2:0", "2:3:0",
+      "3:0:0", "3:1:0", "3:2:2", "3:3:0",
+      "4:0:0", "4:2:0",
+      "5:0:0", "5:1:2", "5:3:0",
+      "6:0:0", "6:0:3", "6:2:0",
+      "7:0:0", "7:2:0", "7:3:0"
+    ];
+    
+    jerseyPattern.forEach(beatTime => {
+      const scheduleTime = time + Tone.Time(beatTime).toSeconds();
+      Tone.getTransport().schedule((triggerTime) => {
+        if (kickSampler && kickSampler.loaded && jerseyClubActive) {
+          kickSampler.triggerAttackRelease("C1", "32n", triggerTime, 0.5);
+        }
+      }, scheduleTime);
+    });
+    
+  }, nextMeasure);
   
-  speedyHook.chain(speedyBitCrusher, speedyDelay, speedyReverb, masterGain);
-  
-  // Start speedy hook with delay
   setTimeout(() => {
-    if (speedyHook) {
-      speedyHook.start();
-      console.log("🚀 Speedy glitch hook started");
+    jerseyClubActive = false;
+    console.log("Jersey club kick ended");
+  }, Tone.Time("8m").toSeconds() * 1000);
+}
+
+// NEW: Calculate hip motion for body aura visualization
+function calculateHipMotion(pose) {
+  const leftHip = pose.keypoints[23];
+  const rightHip = pose.keypoints[24];
+  
+  if (leftHip && rightHip && leftHip.confidence > 0.5 && rightHip.confidence > 0.5) {
+    const hipCenterX = (leftHip.x + rightHip.x) / 2;
+    const hipCenterY = (leftHip.y + rightHip.y) / 2;
+    
+    if (previousHipPosition.x === 0 && previousHipPosition.y === 0) {
+      previousHipPosition = {x: hipCenterX, y: hipCenterY};
+      return 0;
     }
-  }, 2000); // Start after 2 seconds
+    
+    const hipMovement = dist(hipCenterX, hipCenterY, previousHipPosition.x, previousHipPosition.y);
+    previousHipPosition = {x: hipCenterX, y: hipCenterY};
+    
+    return constrain(hipMovement / 30, 0, 1); // Normalize movement
+  }
   
-  setTimeout(() => {
-    popHookActive = false;
+  return 0;
+}
+
+function calculateJumpAmount(pose) {
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  const leftHip = pose.keypoints[23];
+  const rightHip = pose.keypoints[24];
+  
+  if (leftShoulder && rightShoulder && leftHip && rightHip &&
+      leftShoulder.confidence > 0.4 && rightShoulder.confidence > 0.4 &&
+      leftHip.confidence > 0.4 && rightHip.confidence > 0.4) {
     
-    // Clean up effects
-    setTimeout(() => {
-      bitCrusher.dispose();
-      chorus.dispose();
-      tremolo.dispose();
-      filter.dispose();
-      speedyHook.dispose();
-      speedyBitCrusher.dispose();
-      speedyReverb.dispose();
-      speedyDelay.dispose();
-    }, 1000);
+    const bodyCenterY = ((leftShoulder.y + rightShoulder.y) / 2 + (leftHip.y + rightHip.y) / 2) / 2;
     
-  }, 16000); // 4 measures
+    if (baselineBodyY === 0) {
+      baselineBodyY = bodyCenterY;
+      return 0;
+    }
+    
+    baselineBodyY = lerp(baselineBodyY, bodyCenterY, 0.01);
+    
+    const elevation = baselineBodyY - bodyCenterY;
+    const normalizedElevation = elevation / 100;
+    
+    jumpHistory.push(Math.max(0, normalizedElevation));
+    if (jumpHistory.length > 10) {
+      jumpHistory.shift();
+    }
+    
+    const avgElevation = jumpHistory.reduce((sum, val) => sum + val, 0) / jumpHistory.length;
+    
+    return constrain(avgElevation, 0, 1);
+  }
+  
+  return 0;
+}
+
+function calculateNewJeansPose(pose) {
+  const leftWrist = pose.keypoints[15];
+  const rightWrist = pose.keypoints[16];
+  const nose = pose.keypoints[0];
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  
+  if (leftWrist && rightWrist && nose && leftShoulder && rightShoulder &&
+      leftWrist.confidence > 0.6 && rightWrist.confidence > 0.6 && 
+      nose.confidence > 0.6 && leftShoulder.confidence > 0.6 && rightShoulder.confidence > 0.6) {
+    
+    const headY = nose.y;
+    const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2;
+    const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2;
+    
+    const leftHandNearHead = Math.abs(leftWrist.y - headY) < 80 && Math.abs(leftWrist.x - nose.x) < 100;
+    const rightHandNearHead = Math.abs(rightWrist.y - headY) < 80 && Math.abs(rightWrist.x - nose.x) < 100;
+    
+    let handOnHead = false;
+    let handPointingAway = false;
+    
+    if (leftHandNearHead) {
+      handOnHead = true;
+      const rightHandDown = rightWrist.y > shoulderCenterY + 100;
+      const rightHandAway = Math.abs(rightWrist.x - shoulderCenterX) > 80;
+      handPointingAway = rightHandDown && rightHandAway;
+    } else if (rightHandNearHead) {
+      handOnHead = true;
+      const leftHandDown = leftWrist.y > shoulderCenterY + 100;
+      const leftHandAway = Math.abs(leftWrist.x - shoulderCenterX) > 80;
+      handPointingAway = leftHandDown && leftHandAway;
+    }
+    
+    return handOnHead && handPointingAway;
+  }
+  
+  return false;
+}
+
+function calculateBlobTracking(pose) {
+  if (!pose.keypoints) return;
+  
+  let minX = width, maxX = 0, minY = height, maxY = 0;
+  let validPoints = 0;
+  
+  for (let i = 0; i < pose.keypoints.length; i++) {
+    const keypoint = pose.keypoints[i];
+    if (keypoint && keypoint.confidence > 0.3) {
+      minX = Math.min(minX, keypoint.x);
+      maxX = Math.max(maxX, keypoint.x);
+      minY = Math.min(minY, keypoint.y);
+      maxY = Math.max(maxY, keypoint.y);
+      validPoints++;
+    }
+  }
+  
+  if (validPoints > 5) {
+    bodyBoundingBox = {
+      x: minX - 40,
+      y: minY - 40,
+      width: (maxX - minX) + 80,
+      height: (maxY - minY) + 80
+    };
+    blobTrackingActive = true;
+  } else {
+    blobTrackingActive = false;
+  }
+}
+
+function calculateArmStretch(pose) {
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  const leftWrist = pose.keypoints[15];
+  const rightWrist = pose.keypoints[16];
+  
+  if (leftShoulder && rightShoulder && leftWrist && rightWrist &&
+      leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5 &&
+      leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
+    
+    const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+    const centerY = (leftShoulder.y + rightShoulder.y) / 2;
+    bodyCenter = {x: centerX, y: centerY};
+    
+    bodyCenterSmooth.x = lerp(bodyCenterSmooth.x, centerX, 0.15);
+    bodyCenterSmooth.y = lerp(bodyCenterSmooth.y, centerY, 0.15);
+    
+    bodyRotation = atan2(rightShoulder.y - leftShoulder.y, rightShoulder.x - leftShoulder.x);
+    
+    const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
+    const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
+    const avgDistance = (leftDistance + rightDistance) / 2;
+    
+    const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
+    const normalizedDistance = avgDistance / (shoulderWidth * 1.8);
+    
+    // NEW: Calculate hand distance for hand-to-hand visualization
+    handDistance = dist(leftWrist.x, leftWrist.y, rightWrist.x, rightWrist.y);
+    handDistanceSmooth = lerp(handDistanceSmooth, handDistance, 0.1);
+    
+    return constrain(normalizedDistance, 0, 1);
+  }
+  
+  return armStretch;
+}
+
+function calculateHandHeight(pose) {
+  const leftWrist = pose.keypoints[15];
+  const rightWrist = pose.keypoints[16];
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  const leftHip = pose.keypoints[23];
+  const rightHip = pose.keypoints[24];
+  
+  if (leftWrist && rightWrist && leftShoulder && rightShoulder && leftHip && rightHip &&
+      leftWrist.confidence > 0.4 && rightWrist.confidence > 0.4 &&
+      leftShoulder.confidence > 0.4 && rightShoulder.confidence > 0.4) {
+    
+    const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
+    const bodyHeight = Math.abs((leftHip.y + rightHip.y) / 2 - (leftShoulder.y + rightShoulder.y) / 2);
+    
+    const referenceBodyHeight = 150;
+    const distanceScale = Math.max(0.3, Math.min(3.0, referenceBodyHeight / bodyHeight));
+    
+    const avgWristY = (leftWrist.y + rightWrist.y) / 2;
+    const shoulderY = (leftShoulder.y + rightShoulder.y) / 2;
+    
+    const handHeightRaw = (shoulderY - avgWristY) * distanceScale;
+    
+    return constrain(handHeightRaw / 200, -1, 2);
+  }
+  
+  return handHeight;
+}
+
+function calculatePalmDirection(pose) {
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  const leftWrist = pose.keypoints[15];
+  const rightWrist = pose.keypoints[16];
+  
+  if (leftShoulder && rightShoulder && leftWrist && rightWrist &&
+      leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5 &&
+      leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
+    
+    const handDistance = Math.abs(rightWrist.x - leftWrist.x);
+    const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
+    const normalizedWidth = constrain((handDistance - shoulderWidth * 0.5) / (shoulderWidth * 1.5), 0, 1);
+    
+    return normalizedWidth;
+  }
+  
+  return palmDirection;
+}
+
+function calculateMotionAmount(currentPose) {
+  if (previousPoses.length === 0) {
+    previousPoses.push(currentPose);
+    return 0;
+  }
+  
+  const prevPose = previousPoses[previousPoses.length - 1];
+  let totalMotion = 0;
+  let validPoints = 0;
+  
+  const majorBodyPoints = [11, 12, 23, 24];
+  
+  for (let i of majorBodyPoints) {
+    const current = currentPose.keypoints[i];
+    const previous = prevPose.keypoints[i];
+    
+    if (current && previous && current.confidence > 0.7 && previous.confidence > 0.7) {
+      const distance = dist(current.x, current.y, previous.x, previous.y);
+      totalMotion += distance;
+      validPoints++;
+    }
+  }
+  
+  previousPoses.push(currentPose);
+  if (previousPoses.length > 8) {
+    previousPoses.shift();
+  }
+  
+  const avgMotion = validPoints > 0 ? totalMotion / validPoints : 0;
+  motionAmountRaw = constrain(avgMotion / 20, 0, 1);
+  
+  return motionAmountRaw;
+}
+
+function updateAudioFilters() {
+  if (!audioInitialized || !samplesLoaded) return;
+  
+  armStretchSmooth = lerp(armStretchSmooth, armStretch, 0.1);
+  
+  if (motionAmountRaw > motionAmountSmooth) {
+    motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, 0.3);
+  } else {
+    motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, motionDecayRate);
+  }
+  
+  // NEW: Update hip motion smooth
+  hipMotionSmooth = lerp(hipMotionSmooth, hipMotionAmount, 0.2);
+  
+  motionHistory.push(motionAmountSmooth);
+  if (motionHistory.length > 30) {
+    motionHistory.shift();
+  }
+  
+  motionAverage = motionHistory.reduce((sum, val) => sum + val, 0) / motionHistory.length;
+  
+  handHeightSmooth = lerp(handHeightSmooth, handHeight, 0.1);
+  
+  brightnessFreq = map(armStretchSmooth, 0, 1, 8000, 500);
+  brightnessFilter.frequency.rampTo(brightnessFreq, 0.5);
+  
+  const percVol = map(motionAverage, 0, 0.4, -20, -6);
+  if (percussionLoop && percussionLoop.loaded) {
+    percussionLoop.volume.rampTo(percVol, 0.3);
+  }
+  
+  const glitchVol = map(palmDirection, 0, 1, 3, 9);
+  if (glitchBeat && glitchBeat.loaded) {
+    glitchBeat.volume.rampTo(glitchVol, 0.3);
+  }
+  
+  palmFreq = map(palmDirection, 0, 1, 200, 3000);
+  palmFilter.frequency.rampTo(palmFreq, 0.8);
+  
+  const gateDepth = map(Math.abs(handHeightSmooth), 0, 1, 0, 0.95);
+  const gateRate = map(Math.abs(handHeightSmooth), 0, 1, 1, 20);
+  
+  if (stringsGate) {
+    stringsGate.depth.rampTo(gateDepth, 0.2);
+    stringsGate.frequency.rampTo(gateRate, 0.2);
+  }
+  
+  if (choirGate) {
+    choirGate.depth.rampTo(gateDepth, 0.2);
+    choirGate.frequency.rampTo(gateRate * 1.5, 0.2);
+  }
+  
+  if (handHeightSmooth > 0.4 && millis() - lastTwinkleTime > 1000) {
+    triggerHarmonicHandRaiseSynth();
+    lastTwinkleTime = millis();
+  }
+  
+  if (handHeightSmooth > 0.6 && millis() - lastJumpTime > 4000 && !jerseyClubActive) {
+    startJerseyClubKick();
+    lastJumpTime = millis();
+  }
+  
+  if (newJeansPoseActive && millis() - lastNewJeansTrigger > 8000 && !popHookActive) {
+    triggerEnhancedPopHook(); // Use enhanced version
+    lastNewJeansTrigger = millis();
+    console.log("📸 New Jeans pose detected - triggering enhanced granular decay!");
+  }
+  
+  if (jumpAmount > jumpThreshold && millis() - lastJumpTime > 5000 && !isBreakcoreActive) {
+    startBreakcore();
+    lastJumpTime = millis();
+  }
+}
+
+function triggerHarmonicHandRaiseSynth() {
+  if (!audioInitialized) return;
+  
+  const handRangeNormalized = map(handHeightSmooth, 0.4, 1.0, 0.3, 1.0);
+  const kickVelocity = constrain(handRangeNormalized, 0.3, 1.0);
+  
+  const nextOffBeat = Tone.getTransport().nextSubdivision("8n");
+  
+  Tone.getTransport().schedule((time) => {
+    if (kickSampler && kickSampler.loaded) {
+      kickSampler.triggerAttackRelease("C1", "16n", time, kickVelocity * 0.6);
+    }
+    
+    if (handRaiseSynth && handRaiseSynth.loaded) {
+      const currentChord = chordProgression[currentChordIndex % chordProgression.length];
+      const harmNote = currentChord[2];
+      handRaiseSynth.triggerAttackRelease(harmNote.replace('2', '5').replace('3', '5'), "8n", time, kickVelocity * 0.7);
+    }
+  }, nextOffBeat);
+}
+
+// NEW: Enhanced hand-to-hand connection visualization
+function drawHandToHandConnection(leftHandX, leftHandY, rightHandX, rightHandY) {
+  if (!audioAnalyzer || !leftHandX || !leftHandY || !rightHandX || !rightHandY) return;
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  // Calculate hand distance for intensity
+  const distance = dist(leftHandX, leftHandY, rightHandX, rightHandY);
+  const normalizedDistance = map(distance, 50, 300, 1, 0); // Closer = more intense
+  const intensity = constrain(normalizedDistance, 0, 1);
+  
+  // Color gradient based on hand height: white=neutral, red=up, blue=down
+  let connectionColor;
+  if (handHeightSmooth > 0.1) {
+    // Hands raised - red gradient
+    const redIntensity = map(handHeightSmooth, 0.1, 1, 0, 255);
+    connectionColor = [255, 255 - redIntensity, 255 - redIntensity];
+  } else if (handHeightSmooth < -0.1) {
+    // Hands lowered - blue gradient
+    const blueIntensity = map(Math.abs(handHeightSmooth), 0.1, 1, 0, 255);
+    connectionColor = [255 - blueIntensity, 255 - blueIntensity, 255];
+  } else {
+    // Neutral - white
+    connectionColor = [255, 255, 255];
+  }
+  
+  // Number of connection threads based on intensity
+  const numThreads = Math.floor(map(intensity, 0, 1, 1, 8));
+  
+  for (let thread = 0; thread < numThreads; thread++) {
+    stroke(connectionColor[0], connectionColor[1], connectionColor[2], 120 * intensity);
+    strokeWeight(map(intensity, 0, 1, 0.5, 2.5));
+    
+    // Create squiggly waveform between hands
+    let segments = 20;
+    let prevX = leftHandX;
+    let prevY = leftHandY;
+    
+    for (let i = 1; i <= segments; i++) {
+      let progress = i / segments;
+      let baseX = lerp(leftHandX, rightHandX, progress);
+      let baseY = lerp(leftHandY, rightHandY, progress);
+      
+      // Add waveform distortion based on audio and intensity
+      let specIndex = Math.floor(map(progress, 0, 1, 0, spectrum.length - 1));
+      let audioIntensity = (spectrum[specIndex] + 100) / 100;
+      
+      // More intense squiggling when hands are closer
+      let waveformAmount = intensity * audioIntensity * 20;
+      let waveOffset = sin(progress * PI * 4 + millis() * 0.01 + thread * 0.5) * waveformAmount;
+      
+      // Perpendicular offset for thread separation
+      let angle = atan2(rightHandY - leftHandY, rightHandX - leftHandX) + PI/2;
+      let threadOffset = thread * 8 - (numThreads * 4);
+      
+      let x = baseX + cos(angle) * threadOffset + sin(progress * PI * 6) * waveOffset;
+      let y = baseY + sin(angle) * threadOffset + cos(progress * PI * 6) * waveOffset;
+      
+      line(prevX, prevY, x, y);
+      prevX = x;
+      prevY = y;
+    }
+  }
+}
+
+// NEW: Hip motion body aura visualization
+function drawHipMotionAura(centerX, centerY) {
+  if (!audioAnalyzer || hipMotionSmooth < 0.1) return;
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  push();
+  translate(centerX, centerY);
+  
+  // Create subtle parentheses/aura around body that intensifies with hip motion
+  const auraIntensity = hipMotionSmooth;
+  const auraSize = map(auraIntensity, 0, 1, 100, 250);
+  
+  stroke(255, 150, 100, 100 * auraIntensity); // Warm orange glow
+  strokeWeight(1 + auraIntensity * 2);
+  noFill();
+  
+  // Left parenthesis
+  beginShape();
+  for (let angle = PI * 0.2; angle < PI * 1.8; angle += 0.1) {
+    let r = auraSize;
+    
+    // Add audio-reactive distortion
+    let specIndex = Math.floor(map(angle, 0, TWO_PI, 0, spectrum.length - 1));
+    let audioDistortion = (spectrum[specIndex] + 100) / 100 * auraIntensity * 15;
+    
+    r += sin(angle * 3 + millis() * 0.005) * audioDistortion;
+    
+    let x = cos(angle) * r - auraSize * 0.3; // Offset for parenthesis effect
+    let y = sin(angle) * r;
+    
+    vertex(x, y);
+  }
+  endShape();
+  
+  // Right parenthesis
+  beginShape();
+  for (let angle = -PI * 0.8; angle < PI * 0.8; angle += 0.1) {
+    let r = auraSize;
+    
+    let specIndex = Math.floor(map(angle + PI, 0, TWO_PI, 0, spectrum.length - 1));
+    let audioDistortion = (spectrum[specIndex] + 100) / 100 * auraIntensity * 15;
+    
+    r += sin(angle * 3 + millis() * 0.005 + PI) * audioDistortion;
+    
+    let x = cos(angle) * r + auraSize * 0.3; // Offset for parenthesis effect
+    let y = sin(angle) * r;
+    
+    vertex(x, y);
+  }
+  endShape();
+  
+  // Inner subtle oscilloscope lines
+  stroke(255, 100, 150, 80 * auraIntensity);
+  strokeWeight(0.8);
+  
+  for (let ring = 0; ring < 3; ring++) {
+    beginShape();
+    for (let angle = 0; angle < TWO_PI; angle += 0.2) {
+      let r = auraSize * (0.4 + ring * 0.2);
+      
+      let specIndex = Math.floor(map(angle, 0, TWO_PI, 0, spectrum.length - 1));
+      let audioWave = (spectrum[specIndex] + 100) / 100 * auraIntensity * 8;
+      
+      r += sin(angle * 5 + millis() * 0.008 + ring * PI) * audioWave;
+      
+      let x = cos(angle) * r;
+      let y = sin(angle) * r;
+      
+      vertex(x, y);
+    }
+    endShape(CLOSE);
+  }
+  
+  pop();
+}
+
+function drawVoiceVisualization() {
+  if (!voiceVisualsActive) return;
+  
+  push();
+  
+  if (frameCount % 120 === 0) {
+    voiceWaveTarget.x = random(width * 0.2, width * 0.8);
+    voiceWaveTarget.y = random(height * 0.2, height * 0.8);
+  }
+  
+  voiceWavePosition.x = lerp(voiceWavePosition.x, voiceWaveTarget.x, 0.02);
+  voiceWavePosition.y = lerp(voiceWavePosition.y, voiceWaveTarget.y, 0.02);
+  
+  if (voiceWavePoints.length === 0) {
+    for (let i = 0; i < 40; i++) {
+      voiceWavePoints.push({x: 0, y: 0});
+    }
+  }
+  
+  for (let i = 0; i < voiceWavePoints.length; i++) {
+    let angle = (i / voiceWavePoints.length) * TWO_PI * 2;
+    let baseRadius = 60;
+    
+    let voiceModulation = isRecordingVoice ? 20 : 10;
+    let timeModulation = sin(millis() * 0.01 + i * 0.3) * voiceModulation;
+    let radius = baseRadius + timeModulation;
+    
+    voiceWavePoints[i].x = voiceWavePosition.x + cos(angle) * radius;
+    voiceWavePoints[i].y = voiceWavePosition.y + sin(angle) * radius;
+  }
+  
+  stroke(255, 100, 255, 150);
+  strokeWeight(1.5);
+  noFill();
+  
+  beginShape();
+  for (let i = 0; i < voiceWavePoints.length; i++) {
+    let point = voiceWavePoints[i];
+    
+    let jitterX = random(-2, 2);
+    let jitterY = random(-2, 2);
+    
+    vertex(point.x + jitterX, point.y + jitterY);
+  }
+  endShape(CLOSE);
+  
+  stroke(255, 100, 255, 80);
+  strokeWeight(1);
+  beginShape();
+  for (let i = 0; i < voiceWavePoints.length; i += 2) {
+    let point = voiceWavePoints[i];
+    let innerX = voiceWavePosition.x + (point.x - voiceWavePosition.x) * 0.6;
+    let innerY = voiceWavePosition.y + (point.y - voiceWavePosition.y) * 0.6;
+    vertex(innerX, innerY);
+  }
+  endShape(CLOSE);
+  
+  if (isRecordingVoice) {
+    fill(255, 50, 50, 200);
+    noStroke();
+    ellipse(voiceWavePosition.x, voiceWavePosition.y - 80, 12, 12);
+    fill(255);
+    textAlign(CENTER);
+    textSize(8);
+    text("REC", voiceWavePosition.x, voiceWavePosition.y - 75);
+  } else if (voiceVisualsActive) {
+    fill(100, 255, 100, 150);
+    noStroke();
+    ellipse(voiceWavePosition.x, voiceWavePosition.y - 80, 8, 8);
+  }
+  
+  textAlign(LEFT);
+  pop();
+}
+
+function drawBlobTracking() {
+  if (!blobTrackingActive) return;
+  
+  push();
+  
+  let mirroredBox = {
+    x: width - (bodyBoundingBox.x + bodyBoundingBox.width),
+    y: bodyBoundingBox.y,
+    width: bodyBoundingBox.width,
+    height: bodyBoundingBox.height
+  };
+  
+  stroke(120, 120, 120, 160);
+  strokeWeight(0.8);
+  noFill();
+  
+  let glitchOffset = sin(millis() * 0.02) * 1.5;
+  rect(mirroredBox.x + glitchOffset, mirroredBox.y, mirroredBox.width, mirroredBox.height);
+  
+  strokeWeight(1);
+  let cornerSize = 12;
+  
+  // Corner brackets
+  line(mirroredBox.x, mirroredBox.y, mirroredBox.x + cornerSize, mirroredBox.y);
+  line(mirroredBox.x, mirroredBox.y, mirroredBox.x, mirroredBox.y + cornerSize);
+  
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, mirroredBox.x + mirroredBox.width - cornerSize, mirroredBox.y);
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, mirroredBox.x + mirroredBox.width, mirroredBox.y + cornerSize);
+  
+  line(mirroredBox.x, mirroredBox.y + mirroredBox.height, mirroredBox.x + cornerSize, mirroredBox.y + mirroredBox.height);
+  line(mirroredBox.x, mirroredBox.y + mirroredBox.height, mirroredBox.x, mirroredBox.y + mirroredBox.height - cornerSize);
+  
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height, mirroredBox.x + mirroredBox.width - cornerSize, mirroredBox.y + mirroredBox.height);
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height, mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height - cornerSize);
+  
+  stroke(120, 120, 120, 120);
+  strokeWeight(0.6);
+  let boxCenterX = mirroredBox.x + mirroredBox.width / 2;
+  let boxCenterY = mirroredBox.y + mirroredBox.height / 2;
+  
+  let calloutEndX = boxCenterX + 60;
+  let calloutEndY = boxCenterY - 40;
+  
+  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, calloutEndX, calloutEndY);
+  
+  fill(120, 120, 120, 180);
+  noStroke();
+  textAlign(LEFT);
+  textSize(9);
+  text(`TRACKING`, calloutEndX + 5, calloutEndY - 5);
+  text(`${mirroredBox.width.toFixed(0)}x${mirroredBox.height.toFixed(0)}`, calloutEndX + 5, calloutEndY + 8);
+  
+  textAlign(LEFT);
+  
+  pop();
+}
+
+function drawSubtleHandPattern(centerX, centerY, visualScale, reflect = false, colorOverride = null) {
+  if (!audioAnalyzer) return;
+  
+  push();
+  translate(centerX, centerY);
+  rotate(bodyRotation);
+  if (reflect) scale(-1, 1);
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  let handColor = colorOverride || (newJeansPoseActive ? [255, 100, 255] : [255, 255, 255]);
+  
+  stroke(handColor[0], handColor[1], handColor[2], 120);
+  strokeWeight(1.0 + visualScale * 0.01);
+  noFill();
+  
+  beginShape();
+  for (let i = 0; i < spectrum.length; i += 3) {
+    let angle = map(i, 0, spectrum.length, 0, TWO_PI);
+    let intensity = (spectrum[i] + 100) / 100;
+    let radius = intensity * visualScale * 60;
+    
+    let x = cos(angle) * radius;
+    let y = sin(angle) * radius;
+    
+    vertex(x, y);
+  }
+  endShape(CLOSE);
+  
+  stroke(handColor[0], handColor[1], handColor[2], 80);
+  strokeWeight(0.8);
+  beginShape();
+  for (let i = 0; i < spectrum.length; i += 6) {
+    let angle = map(i, 0, spectrum.length, 0, TWO_PI);
+    let intensity = (spectrum[i] + 100) / 100;
+    let radius = intensity * visualScale * 90;
+    
+    let x = cos(angle) * radius;
+    let y = sin(angle) * radius;
+    
+    vertex(x, y);
+  }
+  endShape();
+  
+  pop();
+}
+
+function drawOscilloscopePatternToBuffer(buffer, centerX, centerY, visualScale) {
+  if (!audioAnalyzer) return;
+  
+  buffer.push();
+  buffer.translate(centerX, centerY);
+  buffer.rotate(bodyRotation);
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  if (visualMode === 0) {
+    drawLissajousScaleToBuffer(buffer, spectrum, visualScale);
+  } else {
+    drawSpectralFlowToBuffer(buffer, spectrum, visualScale);
+  }
+  
+  buffer.pop();
+}
+
+function drawLissajousScaleToBuffer(buffer, spectrum, visualScale) {
+  buffer.stroke(255, 100);
+  buffer.strokeWeight(1 + visualScale * 0.01);
+  buffer.noFill();
+  
+  buffer.beginShape();
+  for (let i = 0; i < spectrum.length - 1; i++) {
+    let x = (spectrum[i] + 100) / 100 * visualScale * 400;
+    let y = (spectrum[i + 1] + 100) / 100 * visualScale * 400;
+    
+    let freqMod = (spectrum[i] + 100) / 100 * visualScale * 100;
+    x += cos(i * 0.05) * freqMod;
+    y += sin(i * 0.05) * freqMod;
+    
+    buffer.vertex(x, y);
+  }
+  buffer.endShape();
+}
+
+function drawSpectralFlowToBuffer(buffer, spectrum, visualScale) {
+  buffer.stroke(255, 120);
+  buffer.strokeWeight(1 + visualScale * 0.005);
+  buffer.noFill();
+  
+  let segments = 16;
+  
+  for (let seg = 0; seg < segments; seg++) {
+    let startIdx = Math.floor((spectrum.length / segments) * seg);
+    let endIdx = Math.floor((spectrum.length / segments) * (seg + 1));
+    
+    let gestureInfluence = (armStretchSmooth + motionAmountSmooth + Math.abs(handHeightSmooth)) / 3;
+    let rotationSpeed = 1 + gestureInfluence * 2;
+    let complexityMod = 1 + palmDirection * 0.3;
+    
+    buffer.beginShape();
+    for (let i = startIdx; i < endIdx; i++) {
+      let progress = map(i, startIdx, endIdx, 0, 1);
+      let intensity = (spectrum[i] + 100) / 100;
+      
+      let baseAngle = map(seg, 0, segments, 0, TWO_PI * rotationSpeed);
+      let flowAngle = baseAngle + progress * PI * complexityMod;
+      
+      let radius = intensity * visualScale * (100 + gestureInfluence * 50);
+      let spiralFactor = progress * gestureInfluence * 0.5;
+      
+      let x = cos(flowAngle) * (radius + spiralFactor * 30);
+      let y = sin(flowAngle) * (radius + spiralFactor * 30);
+      
+      let harmonicFreq = 3 + Math.floor(gestureInfluence * 4);
+      x += cos(flowAngle * harmonicFreq) * intensity * visualScale * (20 + gestureInfluence * 15);
+      y += sin(flowAngle * harmonicFreq) * intensity * visualScale * (20 + gestureInfluence * 15);
+      
+      buffer.vertex(x, y);
+    }
+    buffer.endShape();
+  }
+}
+
+function drawOscilloscopePattern(centerX, centerY, scale) {
+  if (!audioAnalyzer) return;
+  
+  push();
+  translate(centerX, centerY);
+  rotate(bodyRotation);
+  
+  const spectrum = audioAnalyzer.getValue();
+  
+  if (visualMode === 0) {
+    drawLissajousScale(spectrum, scale);
+  } else {
+    drawSpectralFlow(spectrum, scale);
+  }
+  
+  pop();
+}
+
+function drawLissajousScale(spectrum, scale) {
+  stroke(255, 200);
+  strokeWeight(0.8 + scale * 0.005);
+  noFill();
+  
+  beginShape();
+  for (let i = 0; i < spectrum.length - 1; i++) {
+    let x = (spectrum[i] + 100) / 100 * scale * 400;
+    let y = (spectrum[i + 1] + 100) / 100 * scale * 400;
+    
+    let freqMod = (spectrum[i] + 100) / 100 * scale * 100;
+    x += cos(i * 0.05) * freqMod;
+    y += sin(i * 0.05) * freqMod;
+    
+    vertex(x, y);
+  }
+  endShape();
+  
+  stroke(255, 150);
+  strokeWeight(0.4 + scale * 0.003);
+  beginShape();
+  for (let i = 0; i < spectrum.length - 1; i++) {
+    let x = -(spectrum[i] + 100) / 100 * scale * 400;
+    let y = -(spectrum[i + 1] + 100) / 100 * scale * 400;
+    vertex(x, y);
+  }
+  endShape();
+}
+
+function drawSpectralFlow(spectrum, scale) {
+  stroke(255, 180);
+  strokeWeight(0.8 + scale * 0.003);
+  noFill();
+  
+  let segments = 16;
+  
+  for (let seg = 0; seg < segments; seg++) {
+    let startIdx = Math.floor((spectrum.length / segments) * seg);
+    let endIdx = Math.floor((spectrum.length / segments) * (seg + 1));
+    
+    let gestureInfluence = (armStretchSmooth + motionAmountSmooth + Math.abs(handHeightSmooth)) / 3;
+    let rotationSpeed = 1 + gestureInfluence * 2;
+    let complexityMod = 1 + palmDirection * 0.3;
+    
+    stroke(255, 180);
+    strokeWeight(0.8 + scale * 0.003);
+    
+    beginShape();
+    for (let i = startIdx; i < endIdx; i++) {
+      let progress = map(i, startIdx, endIdx, 0, 1);
+      let intensity = (spectrum[i] + 100) / 100;
+      
+      let baseAngle = map(seg, 0, segments, 0, TWO_PI * rotationSpeed);
+      let flowAngle = baseAngle + progress * PI * complexityMod;
+      
+      let radius = intensity * scale * (100 + gestureInfluence * 50);
+      let spiralFactor = progress * gestureInfluence * 0.5;
+      
+      let x = cos(flowAngle) * (radius + spiralFactor * 30);
+      let y = sin(flowAngle) * (radius + spiralFactor * 30);
+      
+      let harmonicFreq = 3 + Math.floor(gestureInfluence * 4);
+      x += cos(flowAngle * harmonicFreq) * intensity * scale * (20 + gestureInfluence * 15);
+      y += sin(flowAngle * harmonicFreq) * intensity * scale * (20 + gestureInfluence * 15);
+      
+      vertex(x, y);
+    }
+    endShape();
+    
+    if (seg < segments - 1) {
+      stroke(255, 40);
+      strokeWeight(0.2);
+      let angle1 = map(seg, 0, segments, 0, TWO_PI);
+      let angle2 = map(seg + 1, 0, segments, 0, TWO_PI);
+      let r = scale * 30;
+      line(cos(angle1) * r, sin(angle1) * r, cos(angle2) * r, sin(angle2) * r);
+    }
+  }
+}
+
+function drawGestureMeters() {
+  let meterX = 20;
+  let meterY = 100;
+  let meterWidth = 240;
+  let meterHeight = 15;
+  let spacing = 28;
+  
+  fill(0, 0, 0, 150);
+  noStroke();
+  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 13 + 10);
+  
+  // Arm Stretch Meter
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  fill(255, 100, 100);
+  rect(meterX, meterY, meterWidth * armStretchSmooth, meterHeight);
+  fill(255);
+  textSize(11);
+  text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness`, meterX, meterY - 3);
+  
+  // Motion Amount Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  fill(100, 255, 100);
+  rect(meterX, meterY, meterWidth * motionAverage, meterHeight);
+  fill(255);
+  
+  const currentPercVol = map(motionAverage, 0, 0.4, -20, -6);
+  text(`Motion: ${(motionAverage * 100).toFixed(0)}% → Perc: ${currentPercVol.toFixed(1)}dB`, meterX, meterY - 3);
+  
+  // NEW: Hip Motion Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  fill(255, 150, 100);
+  rect(meterX, meterY, meterWidth * hipMotionSmooth, meterHeight);
+  fill(255);
+  text(`Hip Motion: ${(hipMotionSmooth * 100).toFixed(0)}% → Body Aura`, meterX, meterY - 3);
+  
+  // Hand Height Meter with color coding
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  let handHeightDisplay = map(Math.abs(handHeightSmooth), 0, 1, 0, 1);
+  
+  if (handHeightSmooth > 0.4) {
+    fill(255, 50, 50);
+  } else {
+    fill(100, 100, 255);
+  }
+  rect(meterX, meterY, meterWidth * handHeightDisplay, meterHeight);
+  
+  stroke(255, 255, 0);
+  strokeWeight(2);
+  let thresholdX = meterX + (meterWidth * 0.4);
+  line(thresholdX, meterY, thresholdX, meterY + meterHeight);
+  noStroke();
+  
+  fill(255);
+  text(`Hands: ${handHeightSmooth > 0 ? 'UP (RED)' : 'DOWN (BLUE)'} ${handHeightSmooth.toFixed(2)} → Color + Effects`, meterX, meterY - 3);
+  
+  // NEW: Hand Distance Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  let handDistanceNorm = map(handDistanceSmooth, 50, 300, 1, 0);
+  fill(255, 255, 100);
+  rect(meterX, meterY, meterWidth * handDistanceNorm, meterHeight);
+  fill(255);
+  text(`Hand Distance: ${handDistanceSmooth.toFixed(0)}px → Connection Intensity`, meterX, meterY - 3);
+  
+  // Palm Direction Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  fill(255, 255, 100);
+  rect(meterX, meterY, meterWidth * palmDirection, meterHeight);
+  fill(255);
+  text(`Hand Width: ${(palmDirection * 100).toFixed(0)}% → Filter + Glitch Beat`, meterX, meterY - 3);
+  
+  // Jump Detection Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  if (jumpAmount > jumpThreshold) {
+    fill(255, 50, 50);
+  } else {
+    fill(100, 255, 100);
+  }
+  rect(meterX, meterY, meterWidth * jumpAmount, meterHeight);
+  
+  stroke(255, 255, 0);
+  strokeWeight(2);
+  let jumpThresholdX = meterX + (meterWidth * jumpThreshold);
+  line(jumpThresholdX, meterY, jumpThresholdX, meterY + meterHeight);
+  noStroke();
+  
+  fill(255);
+  text(`Jump: ${(jumpAmount * 100).toFixed(0)}% → Gabber Breakcore${jumpAmount > jumpThreshold ? ' ACTIVE!' : ''}`, meterX, meterY - 3);
+  
+  // Voice Recording Meter - FIXED
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  if (isRecordingVoice) {
+    fill(255, 50, 50);
+    let recordProgress = (millis() - recordingStartTime) / maxRecordingTime;
+    rect(meterX, meterY, meterWidth * recordProgress, meterHeight);
+  } else if (voiceVisualsActive) {
+    fill(100, 255, 100);
+    rect(meterX, meterY, meterWidth, meterHeight);
+  }
+  
+  fill(255);
+  let voiceText = isRecordingVoice ? 'RECORDING (NO FEEDBACK)...' : voiceVisualsActive ? 'LOOPING' : 'SPACE=Record (FIXED - no feedback!)';
+  text(`Voice: ${voiceText}`, meterX, meterY - 3);
+  
+  // New Jeans Pose Detection Meter
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  if (newJeansPoseActive) {
+    fill(255, 100, 255);
+    rect(meterX, meterY, meterWidth, meterHeight);
+  }
+  
+  fill(255);
+  text(`New Jeans Pose: ${newJeansPoseActive ? 'DETECTED - Granular decay!' : 'Hand on head + point away'}`, meterX, meterY - 3);
+  
+  // Enhanced Pop Hook Status
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  if (popHookActive) {
+    fill(255, 100, 255);
+    let decayProgress = popHookActive && decayStartTime > 0 ? (millis() - decayStartTime) / decayDuration : 0;
+    rect(meterX, meterY, meterWidth * decayProgress, meterHeight);
+  }
+  
+  fill(255);
+  let hookText = popHookActive ? `DECAYING ${((millis() - decayStartTime) / 1000).toFixed(0)}s/60s` : 'Press V or use pose';
+  text(`Granular Decay: ${hookText}`, meterX, meterY - 3);
+  
+  // Sample Status
+  meterY += spacing;
+  fill(50);
+  rect(meterX, meterY, meterWidth, meterHeight);
+  
+  let arpeggioLoaded = arpeggioSampler && arpeggioSampler.loaded;
+  let stringsLoaded = stringsSampler && stringsSampler.loaded;
+  let glitchLoaded = glitchBeat && glitchBeat.loaded;
+  let popLoaded = popHookSampler && popHookSampler.loaded;
+  
+  if (arpeggioLoaded && stringsLoaded && glitchLoaded && popLoaded) {
+    fill(50, 255, 50);
+  } else if (arpeggioLoaded && stringsLoaded && glitchLoaded) {
+    fill(255, 255, 50);
+  } else {
+    fill(255, 50, 50);
+  }
+  
+  rect(meterX, meterY, meterWidth, meterHeight);
+  fill(255);
+  
+  let statusText = "";
+  if (arpeggioLoaded && stringsLoaded && glitchLoaded && popLoaded) {
+    statusText = "✓ All Enhanced Samples Ready";
+  } else if (arpeggioLoaded && stringsLoaded && glitchLoaded) {
+    statusText = "⚠️ Core OK, Granular Hook Missing";
+  } else {
+    statusText = "❌ Key Samples Missing";
+  }
+  
+  text(statusText, meterX, meterY - 3);
 }
 
 function startAmbientMusic() {
@@ -877,9 +1965,9 @@ function startAmbientMusic() {
       Tone.getTransport().schedule((scheduleTime) => {
         if (vocalChoirSampler && vocalChoirSampler.loaded) {
           const velocity = 0.7 + Math.random() * 0.1;
-          vocalChoirSampler.triggerAttackRelease(note, currentChanting.duration, scheduleTime, velocity);
+          vocalChoirSampler.triggerAttackRelease(note, "4m", scheduleTime, velocity);
         }
-      }, `+${chantTime}`);
+      }, `+${chantTime * 1.5}`);
     });
     
     melodyChordIndex = (melodyChordIndex + 1) % repeatingMelodies.length;
@@ -999,1137 +2087,10 @@ function stopMusic() {
   }
 }
 
-// All gesture calculation functions remain the same...
-function calculateJumpAmount(pose) {
-  const leftAnkle = pose.keypoints[27];
-  const rightAnkle = pose.keypoints[28];
-  const leftShoulder = pose.keypoints[11];
-  const rightShoulder = pose.keypoints[12];
-  const leftHip = pose.keypoints[23];
-  const rightHip = pose.keypoints[24];
-  
-  if (leftAnkle && rightAnkle && leftShoulder && rightShoulder && leftHip && rightHip &&
-      leftAnkle.confidence > 0.6 && rightAnkle.confidence > 0.6 && 
-      leftShoulder.confidence > 0.6 && rightShoulder.confidence > 0.6) {
-    
-    // Calculate body center and dimensions
-    const avgShoulderY = (leftShoulder.y + rightShoulder.y) / 2;
-    const avgHipY = (leftHip.y + rightHip.y) / 2;
-    const avgAnkleY = (leftAnkle.y + rightAnkle.y) / 2;
-    const bodyHeight = avgAnkleY - avgShoulderY;
-    
-    // More lenient body proportion check
-    if (bodyHeight < 150 || bodyHeight > 600) {
-      return 0;
-    }
-    
-    // Check if person is reasonably centered
-    const avgBodyX = (leftShoulder.x + rightShoulder.x) / 2;
-    if (avgBodyX < width * 0.2 || avgBodyX > width * 0.8) {
-      return 0;
-    }
-    
-    // IMPROVED: Use hip-to-ankle distance for more stable ground reference
-    const hipToAnkleDistance = avgAnkleY - avgHipY;
-    const expectedHipToAnkle = bodyHeight * 0.4; // Roughly 40% of body height
-    
-    // Calculate elevation based on hip-ankle ratio
-    const elevationRatio = (expectedHipToAnkle - hipToAnkleDistance) / expectedHipToAnkle;
-    const rawJump = constrain(elevationRatio * 2, 0, 2); // Scale up for sensitivity
-    
-    // Add to jump history for consistency
-    jumpHistory.push(rawJump);
-    if (jumpHistory.length > 3) { // Shorter history for faster response
-      jumpHistory.shift();
-    }
-    
-    // Only consider it a jump if consistently elevated
-    const avgJump = jumpHistory.reduce((sum, val) => sum + val, 0) / jumpHistory.length;
-    const consistentJump = jumpHistory.filter(j => j > 0.3).length >= 2; // 2 out of 3 frames
-    
-    console.log(`Jump calc: hip-ankle=${hipToAnkleDistance.toFixed(1)}, expected=${expectedHipToAnkle.toFixed(1)}, raw=${rawJump.toFixed(2)}, avg=${avgJump.toFixed(2)}, consistent=${consistentJump}`);
-    
-    return consistentJump ? avgJump : 0;
-  }
-  
-  return 0;
-}
-
-// NEW: Calculate blob tracking bounding box
-function calculateBlobTracking(pose) {
-  if (!pose.keypoints) return;
-  
-  let minX = width, maxX = 0, minY = height, maxY = 0;
-  let validPoints = 0;
-  
-  // Find bounding box of all visible keypoints
-  for (let i = 0; i < pose.keypoints.length; i++) {
-    const keypoint = pose.keypoints[i];
-    if (keypoint && keypoint.confidence > 0.3) {
-      minX = Math.min(minX, keypoint.x);
-      maxX = Math.max(maxX, keypoint.x);
-      minY = Math.min(minY, keypoint.y);
-      maxY = Math.max(maxY, keypoint.y);
-      validPoints++;
-    }
-  }
-  
-  if (validPoints > 5) { // Need enough points for valid tracking
-    bodyBoundingBox = {
-      x: minX - 20, // Add padding
-      y: minY - 20,
-      width: (maxX - minX) + 40,
-      height: (maxY - minY) + 40
-    };
-    blobTrackingActive = true;
-    
-    // Update tracking points for glitch effect
-    trackingPoints = [];
-    for (let i = 0; i < 8; i++) {
-      trackingPoints.push({
-        x: minX + (maxX - minX) * Math.random(),
-        y: minY + (maxY - minY) * Math.random(),
-        age: 0
-      });
-    }
-  } else {
-    blobTrackingActive = false;
-  }
-}
-
-function calculateArmStretch(pose) {
-  const leftShoulder = pose.keypoints[11];
-  const rightShoulder = pose.keypoints[12];
-  const leftWrist = pose.keypoints[15];
-  const rightWrist = pose.keypoints[16];
-  
-  if (leftShoulder && rightShoulder && leftWrist && rightWrist &&
-      leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5 &&
-      leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
-    
-    const centerX = (leftShoulder.x + rightShoulder.x) / 2;
-    const centerY = (leftShoulder.y + rightShoulder.y) / 2;
-    bodyCenter = {x: centerX, y: centerY};
-    
-    bodyCenterSmooth.x = lerp(bodyCenterSmooth.x, centerX, 0.15);
-    bodyCenterSmooth.y = lerp(bodyCenterSmooth.y, centerY, 0.15);
-    
-    bodyRotation = atan2(rightShoulder.y - leftShoulder.y, rightShoulder.x - leftShoulder.x);
-    
-    const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
-    const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
-    const avgDistance = (leftDistance + rightDistance) / 2;
-    
-    const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
-    const normalizedDistance = avgDistance / (shoulderWidth * 1.8);
-    
-    return constrain(normalizedDistance, 0, 1);
-  }
-  
-  return armStretch;
-}
-
-function calculateHandHeight(pose) {
-  const leftWrist = pose.keypoints[15];
-  const rightWrist = pose.keypoints[16];
-  const nose = pose.keypoints[0];
-  
-  if (leftWrist && rightWrist && nose &&
-      leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5 && nose.confidence > 0.5) {
-    
-    const avgWristY = (leftWrist.y + rightWrist.y) / 2;
-    const handHeightRaw = nose.y - avgWristY;
-    
-    return constrain(handHeightRaw / 400, -1, 1);
-  }
-  
-  return handHeight;
-}
-
-function calculatePalmDirection(pose) {
-  const leftShoulder = pose.keypoints[11];
-  const rightShoulder = pose.keypoints[12];
-  const leftWrist = pose.keypoints[15];
-  const rightWrist = pose.keypoints[16];
-  
-  if (leftShoulder && rightShoulder && leftWrist && rightWrist &&
-      leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5 &&
-      leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
-    
-    const handDistance = Math.abs(rightWrist.x - leftWrist.x);
-    const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x);
-    const normalizedWidth = constrain((handDistance - shoulderWidth * 0.5) / (shoulderWidth * 1.5), 0, 1);
-    
-    return normalizedWidth;
-  }
-  
-  return palmDirection;
-}
-
-function calculateMotionAmount(currentPose) {
-  if (previousPoses.length === 0) {
-    previousPoses.push(currentPose);
-    return 0;
-  }
-  
-  const prevPose = previousPoses[previousPoses.length - 1];
-  let totalMotion = 0;
-  let validPoints = 0;
-  
-  const majorBodyPoints = [11, 12, 23, 24];
-  
-  for (let i of majorBodyPoints) {
-    const current = currentPose.keypoints[i];
-    const previous = prevPose.keypoints[i];
-    
-    if (current && previous && current.confidence > 0.7 && previous.confidence > 0.7) {
-      const distance = dist(current.x, current.y, previous.x, previous.y);
-      totalMotion += distance;
-      validPoints++;
-    }
-  }
-  
-  previousPoses.push(currentPose);
-  if (previousPoses.length > 8) {
-    previousPoses.shift();
-  }
-  
-  const avgMotion = validPoints > 0 ? totalMotion / validPoints : 0;
-  motionAmountRaw = constrain(avgMotion / 20, 0, 1);
-  
-  return motionAmountRaw;
-}
-
-function updateAudioFilters() {
-  if (!audioInitialized || !samplesLoaded) return;
-  
-  armStretchSmooth = lerp(armStretchSmooth, armStretch, 0.1);
-  
-  if (motionAmountRaw > motionAmountSmooth) {
-    motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, 0.3);
-  } else {
-    motionAmountSmooth = lerp(motionAmountSmooth, motionAmountRaw, motionDecayRate);
-  }
-  
-  motionHistory.push(motionAmountSmooth);
-  if (motionHistory.length > 30) {
-    motionHistory.shift();
-  }
-  
-  motionAverage = motionHistory.reduce((sum, val) => sum + val, 0) / motionHistory.length;
-  
-  handHeightSmooth = lerp(handHeightSmooth, handHeight, 0.1);
-  
-  // ARM STRETCH → BRIGHTNESS FILTER
-  brightnessFreq = map(armStretchSmooth, 0, 1, 8000, 500);
-  brightnessFilter.frequency.rampTo(brightnessFreq, 0.5);
-  
-  // MOTION AVERAGE → PERCUSSION LOOP VOLUME
-  const percVol = map(motionAverage, 0, 0.4, -20, -6);
-  if (percussionLoop && percussionLoop.loaded) {
-    percussionLoop.volume.rampTo(percVol, 0.3);
-  }
-  
-  // MOTION → GLITCH BEAT VOLUME (boosted)
-  const glitchVol = map(palmDirection, 0, 1, 3, 9); // BOOSTED range: +3dB to +9dB
-  if (glitchBeat && glitchBeat.loaded) {
-    glitchBeat.volume.rampTo(glitchVol, 0.3);
-  }
-  
-  // PALM DIRECTION → HIGH-PASS FILTER
-  palmFreq = map(palmDirection, 0, 1, 200, 3000);
-  palmFilter.frequency.rampTo(palmFreq, 0.8);
-  
-  // HAND HEIGHT → GATING EFFECT
-  const gateDepth = map(Math.abs(handHeightSmooth), 0, 1, 0, 0.95);
-  const gateRate = map(Math.abs(handHeightSmooth), 0, 1, 1, 20);
-  
-  if (stringsGate) {
-    stringsGate.depth.rampTo(gateDepth, 0.2);
-    stringsGate.frequency.rampTo(gateRate, 0.2);
-  }
-  
-  if (choirGate) {
-    choirGate.depth.rampTo(gateDepth, 0.2);
-    choirGate.frequency.rampTo(gateRate * 1.5, 0.2);
-  }
-  
-  // HAND HEIGHT → HARMONIC HAND RAISE SYNTH + KICK
-  if (handHeightSmooth > 0.4 && millis() - lastTwinkleTime > 1000) {
-    triggerHarmonicHandRaiseSynth();
-    lastTwinkleTime = millis();
-  }
-  
-  // HAND HEIGHT → JERSEY CLUB KICK
-  if (handHeightSmooth > 0.6 && millis() - lastJumpTime > 4000 && !jerseyClubActive) {
-    startJerseyClubKick();
-    lastJumpTime = millis();
-  }
-  
-  // JUMP → BREAKCORE TRIGGER
-  if (jumpAmount > jumpThreshold && millis() - lastJumpTime > 5000 && !isBreakcoreActive) {
-    startBreakcore();
-    lastJumpTime = millis();
-  }
-}
-
-// NEW: Harmonic hand raise synth (fits better with the music)
-function triggerHarmonicHandRaiseSynth() {
-  if (!audioInitialized) return;
-  
-  const handRangeNormalized = map(handHeightSmooth, 0.4, 1.0, 0.3, 1.0);
-  const kickVelocity = constrain(handRangeNormalized, 0.3, 1.0);
-  
-  // Trigger kick
-  if (kickSampler && kickSampler.loaded) {
-    kickSampler.triggerAttackRelease("C1", "8n", "+0", kickVelocity);
-  }
-  
-  if (handRaiseSynth && handRaiseSynth.loaded) {
-    // Play in the current chord key for harmony
-    const currentChord = chordProgression[currentChordIndex % chordProgression.length];
-    const baseNote = currentChord[0]; // Get root note
-    handRaiseSynth.triggerAttackRelease(baseNote.replace('2', '4'), "1n", "+0", kickVelocity);
-  } else {
-    // HARMONIC fallback synth in current key
-    const harmonicSynth = new Tone.Synth({
-      oscillator: { type: "sawtooth" },
-      envelope: { 
-        attack: 0.01, 
-        decay: 0.2, 
-        sustain: 0.6, 
-        release: 1.0 
-      }
-    });
-    
-    const harmonicFilter = new Tone.Filter({
-      frequency: 2000,
-      type: "lowpass",
-      Q: 8
-    });
-    
-    harmonicSynth.connect(harmonicFilter);
-    harmonicFilter.connect(masterGain);
-    
-    // Play chord tones for harmony
-    const currentChord = chordProgression[currentChordIndex % chordProgression.length];
-    currentChord.forEach((note, index) => {
-      const harmNote = note.replace('2', '5').replace('3', '5'); // Move to 5th octave
-      harmonicSynth.triggerAttackRelease(harmNote, "4n", `+${index * 0.02}`, kickVelocity * 0.8);
-    });
-    
-    setTimeout(() => {
-      harmonicSynth.dispose();
-      harmonicFilter.dispose();
-    }, 3000);
-  }
-}
-
-// NEW: Voice visualization (floating meandering waveform)
-function drawVoiceVisualization() {
-  if (!voiceVisualsActive) return;
-  
-  push();
-  
-  // Update floating position (slow meandering movement)
-  if (frameCount % 120 === 0) { // Change target every 2 seconds
-    voiceWaveTarget.x = random(width * 0.2, width * 0.8);
-    voiceWaveTarget.y = random(height * 0.2, height * 0.8);
-  }
-  
-  // Smooth movement toward target
-  voiceWavePosition.x = lerp(voiceWavePosition.x, voiceWaveTarget.x, 0.02);
-  voiceWavePosition.y = lerp(voiceWavePosition.y, voiceWaveTarget.y, 0.02);
-  
-  // Create waveform points
-  if (voiceWavePoints.length === 0) {
-    for (let i = 0; i < 40; i++) {
-      voiceWavePoints.push({x: 0, y: 0});
-    }
-  }
-  
-  // Update waveform points with audio-reactive motion
-  for (let i = 0; i < voiceWavePoints.length; i++) {
-    let angle = (i / voiceWavePoints.length) * TWO_PI * 2;
-    let baseRadius = 60;
-    
-    // Add voice activity modulation
-    let voiceModulation = isRecordingVoice ? 20 : 10;
-    let timeModulation = sin(millis() * 0.01 + i * 0.3) * voiceModulation;
-    let radius = baseRadius + timeModulation;
-    
-    voiceWavePoints[i].x = voiceWavePosition.x + cos(angle) * radius;
-    voiceWavePoints[i].y = voiceWavePosition.y + sin(angle) * radius;
-  }
-  
-  // Draw the floating waveform
-  stroke(255, 100, 255, 150); // Purple semi-transparent
-  strokeWeight(1.5);
-  noFill();
-  
-  beginShape();
-  for (let i = 0; i < voiceWavePoints.length; i++) {
-    let point = voiceWavePoints[i];
-    
-    // Add small random jitter for organic feel
-    let jitterX = random(-2, 2);
-    let jitterY = random(-2, 2);
-    
-    vertex(point.x + jitterX, point.y + jitterY);
-  }
-  endShape(CLOSE);
-  
-  // Add a second, inner waveform for complexity
-  stroke(255, 100, 255, 80);
-  strokeWeight(1);
-  beginShape();
-  for (let i = 0; i < voiceWavePoints.length; i += 2) {
-    let point = voiceWavePoints[i];
-    let innerX = voiceWavePosition.x + (point.x - voiceWavePosition.x) * 0.6;
-    let innerY = voiceWavePosition.y + (point.y - voiceWavePosition.y) * 0.6;
-    vertex(innerX, innerY);
-  }
-  endShape(CLOSE);
-  
-  // Recording indicator near the waveform
-  if (isRecordingVoice) {
-    fill(255, 50, 50, 200);
-    noStroke();
-    ellipse(voiceWavePosition.x, voiceWavePosition.y - 80, 12, 12);
-    fill(255);
-    textAlign(CENTER);
-    textSize(8);
-    text("REC", voiceWavePosition.x, voiceWavePosition.y - 75);
-  } else if (voiceVisualsActive) {
-    fill(100, 255, 100, 150);
-    noStroke();
-    ellipse(voiceWavePosition.x, voiceWavePosition.y - 80, 8, 8);
-  }
-  
-  textAlign(LEFT); // Reset text alignment
-  pop();
-}
-
-// NEW: Blob tracking visualization (TouchDesigner style) - REFINED
-function drawBlobTracking() {
-  if (!blobTrackingActive) return;
-  
-  push();
-  
-  // Mirror the bounding box to match video flip
-  let mirroredBox = {
-    x: width - (bodyBoundingBox.x + bodyBoundingBox.width),
-    y: bodyBoundingBox.y,
-    width: bodyBoundingBox.width,
-    height: bodyBoundingBox.height
-  };
-  
-  // Main bounding box with subtle glitch effect
-  stroke(255, 255, 255, 180); // White lines as requested
-  strokeWeight(1); // Thinner lines as requested
-  noFill();
-  
-  // Subtle glitchy box effect
-  let glitchOffset = sin(millis() * 0.02) * 2;
-  rect(mirroredBox.x + glitchOffset, mirroredBox.y, mirroredBox.width, mirroredBox.height);
-  
-  // Corner brackets for tech aesthetic - also thinner
-  strokeWeight(1.5);
-  let cornerSize = 15;
-  
-  // Top-left corner
-  line(mirroredBox.x, mirroredBox.y, mirroredBox.x + cornerSize, mirroredBox.y);
-  line(mirroredBox.x, mirroredBox.y, mirroredBox.x, mirroredBox.y + cornerSize);
-  
-  // Top-right corner
-  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, mirroredBox.x + mirroredBox.width - cornerSize, mirroredBox.y);
-  line(mirroredBox.x + mirroredBox.width, mirroredBox.y, mirroredBox.x + mirroredBox.width, mirroredBox.y + cornerSize);
-  
-  // Bottom-left corner
-  line(mirroredBox.x, mirroredBox.y + mirroredBox.height, mirroredBox.x + cornerSize, mirroredBox.y + mirroredBox.height);
-  line(mirroredBox.x, mirroredBox.y + mirroredBox.height, mirroredBox.x, mirroredBox.y + mirroredBox.height - cornerSize);
-  
-  // Bottom-right corner
-  line(mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height, mirroredBox.x + mirroredBox.width - cornerSize, mirroredBox.y + mirroredBox.height);
-  line(mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height, mirroredBox.x + mirroredBox.width, mirroredBox.y + mirroredBox.height - cornerSize);
-  
-  // Callout line to center of screen - thinner
-  stroke(255, 255, 255, 120);
-  strokeWeight(0.8);
-  let boxCenterX = mirroredBox.x + mirroredBox.width / 2;
-  let boxCenterY = mirroredBox.y + mirroredBox.height / 2;
-  let screenCenterX = width / 2;
-  let screenCenterY = height / 2;
-  
-  // Stepped callout line (more tech-like)
-  line(boxCenterX, boxCenterY, screenCenterX, boxCenterY);
-  line(screenCenterX, boxCenterY, screenCenterX, screenCenterY);
-  
-  // Info display at screen center
-  fill(255, 255, 255, 180);
-  noStroke();
-  textAlign(CENTER);
-  textSize(10);
-  text(`TRACKING`, screenCenterX, screenCenterY - 8);
-  text(`${mirroredBox.width.toFixed(0)}x${mirroredBox.height.toFixed(0)}`, screenCenterX, screenCenterY + 5);
-  
-  // Removed yellow tracking points as requested - too distracting
-  
-  pop();
-}
-
-// Visual drawing functions remain mostly the same, with additions...
-
-function drawSubtleHandPattern(centerX, centerY, visualScale, reflect = false) {
-  if (!audioAnalyzer) return;
-  
-  push();
-  translate(centerX, centerY);
-  rotate(bodyRotation);
-  if (reflect) scale(-1, 1);
-  
-  const spectrum = audioAnalyzer.getValue();
-  
-  stroke(255, 120);
-  strokeWeight(1.0 + visualScale * 0.01);
-  noFill();
-  
-  beginShape();
-  for (let i = 0; i < spectrum.length; i += 3) {
-    let angle = map(i, 0, spectrum.length, 0, TWO_PI);
-    let intensity = (spectrum[i] + 100) / 100;
-    let radius = intensity * visualScale * 60;
-    
-    let x = cos(angle) * radius;
-    let y = sin(angle) * radius;
-    
-    vertex(x, y);
-  }
-  endShape(CLOSE);
-  
-  stroke(255, 80);
-  strokeWeight(0.8);
-  beginShape();
-  for (let i = 0; i < spectrum.length; i += 6) {
-    let angle = map(i, 0, spectrum.length, 0, TWO_PI);
-    let intensity = (spectrum[i] + 100) / 100;
-    let radius = intensity * visualScale * 90;
-    
-    let x = cos(angle) * radius;
-    let y = sin(angle) * radius;
-    
-    vertex(x, y);
-  }
-  endShape();
-  
-  pop();
-}
-
-function drawHandConnections(leftHandX, leftHandY, rightHandX, rightHandY, bodyX, bodyY) {
-  if (!audioAnalyzer) return;
-  
-  const spectrum = audioAnalyzer.getValue();
-  stroke(255, 60);
-  strokeWeight(1.2);
-  
-  if (leftHandX && leftHandY) {
-    for (let i = 0; i <= 20; i++) {
-      let progress = i / 20;
-      let x = lerp(leftHandX, bodyX, progress);
-      let y = lerp(leftHandY, bodyY, progress);
-      
-      let specIndex = Math.floor(map(progress, 0, 1, 0, spectrum.length - 1));
-      let intensity = (spectrum[specIndex] + 100) / 100;
-      let distortion = intensity * 8;
-      
-      x += sin(progress * PI * 4 + millis() * 0.005) * distortion;
-      y += cos(progress * PI * 4 + millis() * 0.005) * distortion;
-      
-      if (i > 0) {
-        let prevProgress = (i - 1) / 20;
-        let prevX = lerp(leftHandX, bodyX, prevProgress);
-        let prevY = lerp(leftHandY, bodyY, prevProgress);
-        let prevSpecIndex = Math.floor(map(prevProgress, 0, 1, 0, spectrum.length - 1));
-        let prevIntensity = (spectrum[prevSpecIndex] + 100) / 100;
-        let prevDistortion = prevIntensity * 8;
-        
-        prevX += sin(prevProgress * PI * 4 + millis() * 0.005) * prevDistortion;
-        prevY += cos(prevProgress * PI * 4 + millis() * 0.005) * prevDistortion;
-        
-        line(prevX, prevY, x, y);
-      }
-    }
-  }
-  
-  if (rightHandX && rightHandY) {
-    for (let i = 0; i <= 20; i++) {
-      let progress = i / 20;
-      let x = lerp(rightHandX, bodyX, progress);
-      let y = lerp(rightHandY, bodyY, progress);
-      
-      let specIndex = Math.floor(map(progress, 0, 1, 0, spectrum.length - 1));
-      let intensity = (spectrum[specIndex] + 100) / 100;
-      let distortion = intensity * 8;
-      
-      x += sin(progress * PI * 4 + millis() * 0.005 + PI) * distortion;
-      y += cos(progress * PI * 4 + millis() * 0.005 + PI) * distortion;
-      
-      if (i > 0) {
-        let prevProgress = (i - 1) / 20;
-        let prevX = lerp(rightHandX, bodyX, prevProgress);
-        let prevY = lerp(rightHandY, bodyY, prevProgress);
-        let prevSpecIndex = Math.floor(map(prevProgress, 0, 1, 0, spectrum.length - 1));
-        let prevIntensity = (spectrum[prevSpecIndex] + 100) / 100;
-        let prevDistortion = prevIntensity * 8;
-        
-        prevX += sin(prevProgress * PI * 4 + millis() * 0.005 + PI) * prevDistortion;
-        prevY += cos(prevProgress * PI * 4 + millis() * 0.005 + PI) * prevDistortion;
-        
-        line(prevX, prevY, x, y);
-      }
-    }
-  }
-}
-
-function drawOscilloscopePatternToBuffer(buffer, centerX, centerY, visualScale) {
-  if (!audioAnalyzer) return;
-  
-  buffer.push();
-  buffer.translate(centerX, centerY);
-  buffer.rotate(bodyRotation);
-  
-  const spectrum = audioAnalyzer.getValue();
-  
-  if (visualMode === 0) {
-    drawLissajousScaleToBuffer(buffer, spectrum, visualScale);
-  } else {
-    drawSpectralFlowToBuffer(buffer, spectrum, visualScale);
-  }
-  
-  buffer.pop();
-}
-
-function drawLissajousScaleToBuffer(buffer, spectrum, visualScale) {
-  buffer.stroke(255, 100);
-  buffer.strokeWeight(1 + visualScale * 0.01);
-  buffer.noFill();
-  
-  buffer.beginShape();
-  for (let i = 0; i < spectrum.length - 1; i++) {
-    let x = (spectrum[i] + 100) / 100 * visualScale * 400;
-    let y = (spectrum[i + 1] + 100) / 100 * visualScale * 400;
-    
-    let freqMod = (spectrum[i] + 100) / 100 * visualScale * 100;
-    x += cos(i * 0.05) * freqMod;
-    y += sin(i * 0.05) * freqMod;
-    
-    buffer.vertex(x, y);
-  }
-  buffer.endShape();
-}
-
-function drawSpectralFlowToBuffer(buffer, spectrum, visualScale) {
-  buffer.stroke(255, 120);
-  buffer.strokeWeight(1 + visualScale * 0.005);
-  buffer.noFill();
-  
-  let segments = 16;
-  
-  for (let seg = 0; seg < segments; seg++) {
-    let startIdx = Math.floor((spectrum.length / segments) * seg);
-    let endIdx = Math.floor((spectrum.length / segments) * (seg + 1));
-    
-    let gestureInfluence = (armStretchSmooth + motionAmountSmooth + Math.abs(handHeightSmooth)) / 3;
-    let rotationSpeed = 1 + gestureInfluence * 2;
-    let complexityMod = 1 + palmDirection * 0.3;
-    
-    buffer.beginShape();
-    for (let i = startIdx; i < endIdx; i++) {
-      let progress = map(i, startIdx, endIdx, 0, 1);
-      let intensity = (spectrum[i] + 100) / 100;
-      
-      let baseAngle = map(seg, 0, segments, 0, TWO_PI * rotationSpeed);
-      let flowAngle = baseAngle + progress * PI * complexityMod;
-      
-      let radius = intensity * visualScale * (100 + gestureInfluence * 50);
-      let spiralFactor = progress * gestureInfluence * 0.5;
-      
-      let x = cos(flowAngle) * (radius + spiralFactor * 30);
-      let y = sin(flowAngle) * (radius + spiralFactor * 30);
-      
-      let harmonicFreq = 3 + Math.floor(gestureInfluence * 4);
-      x += cos(flowAngle * harmonicFreq) * intensity * visualScale * (20 + gestureInfluence * 15);
-      y += sin(flowAngle * harmonicFreq) * intensity * visualScale * (20 + gestureInfluence * 15);
-      
-      buffer.vertex(x, y);
-    }
-    buffer.endShape();
-  }
-}
-
-function drawOscilloscopePattern(centerX, centerY, scale) {
-  if (!audioAnalyzer) return;
-  
-  push();
-  translate(centerX, centerY);
-  rotate(bodyRotation);
-  
-  const spectrum = audioAnalyzer.getValue();
-  
-  if (visualMode === 0) {
-    drawLissajousScale(spectrum, scale);
-  } else {
-    drawSpectralFlow(spectrum, scale);
-  }
-  
-  pop();
-}
-
-function drawLissajousScale(spectrum, scale) {
-  stroke(255, 200);
-  strokeWeight(2 + scale * 0.02);
-  noFill();
-  
-  beginShape();
-  for (let i = 0; i < spectrum.length - 1; i++) {
-    let x = (spectrum[i] + 100) / 100 * scale * 400;
-    let y = (spectrum[i + 1] + 100) / 100 * scale * 400;
-    
-    let freqMod = (spectrum[i] + 100) / 100 * scale * 100;
-    x += cos(i * 0.05) * freqMod;
-    y += sin(i * 0.05) * freqMod;
-    
-    vertex(x, y);
-  }
-  endShape();
-  
-  stroke(255, 150);
-  strokeWeight(1 + scale * 0.01);
-  beginShape();
-  for (let i = 0; i < spectrum.length - 1; i++) {
-    let x = -(spectrum[i] + 100) / 100 * scale * 400;
-    let y = -(spectrum[i + 1] + 100) / 100 * scale * 400;
-    vertex(x, y);
-  }
-  endShape();
-}
-
-function drawSpectralFlow(spectrum, scale) {
-  stroke(255, 180);
-  strokeWeight(1.5 + scale * 0.01);
-  noFill();
-  
-  let segments = 16;
-  
-  for (let seg = 0; seg < segments; seg++) {
-    let startIdx = Math.floor((spectrum.length / segments) * seg);
-    let endIdx = Math.floor((spectrum.length / segments) * (seg + 1));
-    
-    let gestureInfluence = (armStretchSmooth + motionAmountSmooth + Math.abs(handHeightSmooth)) / 3;
-    let rotationSpeed = 1 + gestureInfluence * 2;
-    let complexityMod = 1 + palmDirection * 0.3;
-    
-    beginShape();
-    for (let i = startIdx; i < endIdx; i++) {
-      let progress = map(i, startIdx, endIdx, 0, 1);
-      let intensity = (spectrum[i] + 100) / 100;
-      
-      let baseAngle = map(seg, 0, segments, 0, TWO_PI * rotationSpeed);
-      let flowAngle = baseAngle + progress * PI * complexityMod;
-      
-      let radius = intensity * scale * (100 + gestureInfluence * 50);
-      let spiralFactor = progress * gestureInfluence * 0.5;
-      
-      let x = cos(flowAngle) * (radius + spiralFactor * 30);
-      let y = sin(flowAngle) * (radius + spiralFactor * 30);
-      
-      let harmonicFreq = 3 + Math.floor(gestureInfluence * 4);
-      x += cos(flowAngle * harmonicFreq) * intensity * scale * (20 + gestureInfluence * 15);
-      y += sin(flowAngle * harmonicFreq) * intensity * scale * (20 + gestureInfluence * 15);
-      
-      vertex(x, y);
-    }
-    endShape();
-    
-    if (seg < segments - 1) {
-      stroke(255, 60);
-      strokeWeight(0.5);
-      let angle1 = map(seg, 0, segments, 0, TWO_PI);
-      let angle2 = map(seg + 1, 0, segments, 0, TWO_PI);
-      let r = scale * 50;
-      line(cos(angle1) * r, sin(angle1) * r, cos(angle2) * r, sin(angle2) * r);
-    }
-  }
-}
-
-function drawGestureMeters() {
-  let meterX = 20;
-  let meterY = 100;
-  let meterWidth = 240;
-  let meterHeight = 15;
-  let spacing = 28;
-  
-  fill(0, 0, 0, 150);
-  noStroke();
-  rect(meterX - 10, meterY - 10, meterWidth + 20, spacing * 11 + 10); // More space for new meters
-  
-  // Arm Stretch Meter
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255, 100, 100);
-  rect(meterX, meterY, meterWidth * armStretchSmooth, meterHeight);
-  fill(255);
-  textSize(11);
-  text(`Arm Stretch: ${(armStretchSmooth * 100).toFixed(0)}% → Brightness`, meterX, meterY - 3);
-  
-  // Motion Amount Meter
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  fill(100, 255, 100);
-  rect(meterX, meterY, meterWidth * motionAverage, meterHeight);
-  fill(255);
-  
-  const currentPercVol = map(motionAverage, 0, 0.4, -20, -6);
-  text(`Motion: ${(motionAverage * 100).toFixed(0)}% → Perc: ${currentPercVol.toFixed(1)}dB`, meterX, meterY - 3);
-  
-  // Hand Height Meter
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  let handHeightDisplay = map(Math.abs(handHeightSmooth), 0, 1, 0, 1);
-  
-  if (handHeightSmooth > 0.4) {
-    fill(255, 50, 50);
-  } else {
-    fill(100, 100, 255);
-  }
-  rect(meterX, meterY, meterWidth * handHeightDisplay, meterHeight);
-  
-  stroke(255, 255, 0);
-  strokeWeight(2);
-  let thresholdX = meterX + (meterWidth * 0.4);
-  line(thresholdX, meterY, thresholdX, meterY + meterHeight);
-  noStroke();
-  
-  fill(255);
-  const currentHandVolume = map(handHeightSmooth, 0.4, 1.0, 0.3, 1.0);
-  text(`Hands: ${handHeightSmooth > 0 ? 'UP' : 'DOWN'} ${handHeightSmooth.toFixed(2)} → Harmonic Synth${handHeightSmooth > 0.4 ? ' COMBO!' : ''}`, meterX, meterY - 3);
-  
-  // Palm Direction Meter
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255, 255, 100);
-  rect(meterX, meterY, meterWidth * palmDirection, meterHeight);
-  fill(255);
-  text(`Hand Width: ${(palmDirection * 100).toFixed(0)}% → Filter + Glitch Beat`, meterX, meterY - 3);
-  
-  // Glitch Beat Volume Meter (BOOSTED)
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255, 100, 255);
-  rect(meterX, meterY, meterWidth * palmDirection, meterHeight);
-  fill(255);
-  const currentGlitchVol = map(palmDirection, 0, 1, 3, 9);
-  text(`Glitch Beat: ${(palmDirection * 100).toFixed(0)}% → Vol: ${currentGlitchVol.toFixed(1)}dB (BOOSTED!)`, meterX, meterY - 3);
-  
-  // Jersey Club Kick Meter
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  
-  let handHeightForJersey = map(Math.abs(handHeightSmooth), 0, 1, 0, 1);
-  if (handHeightSmooth > 0.6) {
-    fill(255, 165, 0);
-  } else {
-    fill(100, 150, 255);
-  }
-  rect(meterX, meterY, meterWidth * handHeightForJersey, meterHeight);
-  
-  stroke(255, 165, 0);
-  strokeWeight(2);
-  let jerseyThresholdX = meterX + (meterWidth * 0.6);
-  line(jerseyThresholdX, meterY, jerseyThresholdX, meterY + meterHeight);
-  noStroke();
-  
-  fill(255);
-  text(`Hand Height: ${(handHeightSmooth * 100).toFixed(0)}% → Jersey Club${handHeightSmooth > 0.6 ? ' BOUNCE!' : ''}`, meterX, meterY - 3);
-  
-  // Jump Detection Meter - UPDATED
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  
-  // Show jump threshold line
-  if (jumpAmount > jumpThreshold) {
-    fill(255, 50, 50); // Red when jumping
-  } else {
-    fill(100, 255, 100); // Green normally
-  }
-  rect(meterX, meterY, meterWidth * (jumpAmount / 2), meterHeight);
-  
-  // Draw threshold line
-  stroke(255, 255, 0);
-  strokeWeight(2);
-  let jumpThresholdX = meterX + (meterWidth * (jumpThreshold / 2));
-  line(jumpThresholdX, meterY, jumpThresholdX, meterY + meterHeight);
-  noStroke();
-  
-  fill(255);
-  text(`Jump: ${(jumpAmount * 100).toFixed(0)}% → Gabber Breakcore${jumpAmount > jumpThreshold ? ' ACTIVE!' : ''}`, meterX, meterY - 3);
-  
-  // Gating Effect Display
-  meterY += spacing;
-  let gateAmount = map(Math.abs(handHeightSmooth), 0, 1, 0, 1);
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255, 150, 255);
-  rect(meterX, meterY, meterWidth * gateAmount, meterHeight);
-  fill(255);
-  text(`Gating Effect: ${(gateAmount * 100).toFixed(0)}% → Strings/Choir Stutter`, meterX, meterY - 3);
-  
-  // NEW: Voice Recording Meter with feedback warning
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  
-  if (isRecordingVoice) {
-    fill(255, 50, 50);
-    let recordProgress = (millis() - recordingStartTime) / maxRecordingTime;
-    rect(meterX, meterY, meterWidth * recordProgress, meterHeight);
-  } else if (voiceVisualsActive) {
-    fill(100, 255, 100);
-    rect(meterX, meterY, meterWidth, meterHeight);
-  }
-  
-  fill(255);
-  let voiceText = isRecordingVoice ? 'RECORDING...' : voiceVisualsActive ? 'LOOPING' : 'SPACE=record (USE HEADPHONES!)';
-  text(`Voice: ${voiceText}`, meterX, meterY - 3);
-  
-  // NEW: Pop Hook Status
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  
-  if (popHookActive) {
-    fill(255, 100, 255);
-    rect(meterX, meterY, meterWidth, meterHeight);
-  }
-  
-  fill(255);
-  text(`Pop Hook: ${popHookActive ? 'PLAYING' : 'Press V to trigger'}`, meterX, meterY - 3);
-  
-  // Sample Status
-  meterY += spacing;
-  fill(50);
-  rect(meterX, meterY, meterWidth, meterHeight);
-  
-  let arpeggioLoaded = arpeggioSampler && arpeggioSampler.loaded;
-  let stringsLoaded = stringsSampler && stringsSampler.loaded;
-  let glitchLoaded = glitchBeat && glitchBeat.loaded;
-  let popLoaded = popHookSampler && popHookSampler.loaded;
-  
-  if (arpeggioLoaded && stringsLoaded && glitchLoaded && popLoaded) {
-    fill(50, 255, 50);
-  } else if (arpeggioLoaded && stringsLoaded && glitchLoaded) {
-    fill(255, 255, 50);
-  } else {
-    fill(255, 50, 50);
-  }
-  
-  rect(meterX, meterY, meterWidth, meterHeight);
-  fill(255);
-  
-  let statusText = "";
-  if (arpeggioLoaded && stringsLoaded && glitchLoaded && popLoaded) {
-    statusText = "✓ All Enhanced Samples Ready";
-  } else if (arpeggioLoaded && stringsLoaded && glitchLoaded) {
-    statusText = "⚠️ Core OK, Pop Hook Missing";
-  } else {
-    statusText = "❌ Key Samples Missing";
-  }
-  
-  text(statusText, meterX, meterY - 3);
-}
-
-function draw() {
-  background(0);
-  
-  // Video overlay (darker for better graphics visibility)
-  push();
-  tint(255, 40);
-  if (video) {
-    scale(-1, 1);
-    image(video, -width, 0, width, height);
-  }
-  pop();
-  
-  if (poses.length === 0) {
-    fill(255, 100);
-    textAlign(CENTER);
-    textSize(18);
-    text("Move into camera view", width/2, height/2);
-    textAlign(LEFT);
-    return;
-  }
-  
-  for (let i = 0; i < poses.length; i++) {
-    let pose = poses[i];
-    
-    armStretch = calculateArmStretch(pose);
-    handHeight = calculateHandHeight(pose);
-    palmDirection = calculatePalmDirection(pose);
-    motionAmount = calculateMotionAmount(pose);
-    motionAmountRaw = motionAmount;
-    jumpAmount = calculateJumpAmount(pose);
-    
-    // NEW: Calculate blob tracking
-    calculateBlobTracking(pose);
-    
-    updateAudioFilters();
-    
-    // Draw skeleton (higher visibility)
-    if (connections && pose.keypoints) {
-      push();
-      scale(-1, 1);
-      stroke(255, 120);
-      strokeWeight(1.5);
-      
-      for (let j = 0; j < connections.length; j++) {
-        let pointAIndex = connections[j][0];
-        let pointBIndex = connections[j][1];
-        let pointA = pose.keypoints[pointAIndex];
-        let pointB = pose.keypoints[pointBIndex];
-        
-        if (pointA && pointB && pointA.confidence > 0.1 && pointB.confidence > 0.1) {
-          line(pointA.x, pointA.y, pointB.x, pointB.y);
-        }
-      }
-      pop();
-    }
-    
-    // Draw main oscilloscope pattern + trace buffer
-    if (audioInitialized && isPlaying && samplesLoaded) {
-      let visualScale = map(armStretchSmooth + motionAmountSmooth, 0, 2, 0.8, 2.5);
-      
-      // NEW: Faster fading for cleaner oscilloscope lines
-      // More aggressive fading to prevent blurred shapes
-      let fadeAmount = map(motionAmountSmooth, 0, 0.5, 80, 35); // Faster fading: 80 when still, 35 when moving
-      traceBuffer.fill(0, 0, 0, fadeAmount);
-      traceBuffer.rect(0, 0, width, height);
-      
-      if (isBreakcoreActive) {
-        visualScale *= 1.5;
-        push();
-        let mirroredCenterX = width - bodyCenterSmooth.x;
-        translate(mirroredCenterX, bodyCenterSmooth.y);
-        stroke(255, 0, 0, 100);
-        strokeWeight(3);
-        noFill();
-        let breakRadius = sin(millis() * 0.01) * 50 + 100;
-        ellipse(0, 0, breakRadius, breakRadius);
-        
-        traceBuffer.push();
-        traceBuffer.translate(mirroredCenterX, bodyCenterSmooth.y);
-        traceBuffer.stroke(255, 0, 0, 100);
-        traceBuffer.strokeWeight(3);
-        traceBuffer.noFill();
-        traceBuffer.ellipse(0, 0, breakRadius, breakRadius);
-        traceBuffer.pop();
-        pop();
-      }
-      
-      let mirroredCenterX = width - bodyCenterSmooth.x;
-      
-      // Draw to both main canvas and trace buffer
-      drawOscilloscopePattern(mirroredCenterX, bodyCenterSmooth.y, visualScale);
-      drawOscilloscopePatternToBuffer(traceBuffer, mirroredCenterX, bodyCenterSmooth.y, visualScale);
-      
-      // Draw hands + connecting lines
-      const leftWrist = pose.keypoints[15];
-      const rightWrist = pose.keypoints[16];
-      
-      let leftHandValid = false, rightHandValid = false;
-      let leftHandX = 0, leftHandY = 0, rightHandX = 0, rightHandY = 0;
-      
-      if (leftWrist && leftWrist.confidence > 0.5) {
-        let targetLeftX = width - leftWrist.x;
-        leftHandSmooth.x = lerp(leftHandSmooth.x, targetLeftX, 0.1);
-        leftHandSmooth.y = lerp(leftHandSmooth.y, leftWrist.y, 0.1);
-        
-        let handScale = visualScale * 0.4;
-        drawSubtleHandPattern(leftHandSmooth.x, leftHandSmooth.y, handScale, false);
-        
-        leftHandValid = true;
-        leftHandX = leftHandSmooth.x;
-        leftHandY = leftHandSmooth.y;
-      }
-      
-      if (rightWrist && rightWrist.confidence > 0.5) {
-        let targetRightX = width - rightWrist.x;
-        rightHandSmooth.x = lerp(rightHandSmooth.x, targetRightX, 0.1);
-        rightHandSmooth.y = lerp(rightHandSmooth.y, rightWrist.y, 0.1);
-        
-        let handScale = visualScale * 0.4;
-        drawSubtleHandPattern(rightHandSmooth.x, rightHandSmooth.y, handScale, true);
-        
-        rightHandValid = true;
-        rightHandX = rightHandSmooth.x;
-        rightHandY = rightHandSmooth.y;
-      }
-      
-      // Draw connecting lines
-      if (leftHandValid || rightHandValid) {
-        drawHandConnections(
-          leftHandValid ? leftHandX : null, 
-          leftHandValid ? leftHandY : null,
-          rightHandValid ? rightHandX : null, 
-          rightHandValid ? rightHandY : null,
-          mirroredCenterX, 
-          bodyCenterSmooth.y
-        );
-      }
-      
-      // Draw the trace buffer
-      tint(255, 180);
-      image(traceBuffer, 0, 0);
-      noTint();
-    }
-    
-    // NEW: Draw blob tracking visualization
-    if (blobTrackingActive) {
-      drawBlobTracking();
-    }
-  }
-  
-  // NEW: Draw voice visualization
-  drawVoiceVisualization();
-  
-  if (audioInitialized) {
-    drawGestureMeters();
-  }
-  
-  // Visual mode info
-  fill(255, 150);
-  textAlign(RIGHT);
-  textSize(12);
-  text(`Visual: ${visualModes[visualMode]} (M to change)`, width - 20, height - 20);
-  
-  textSize(10);
-  text(`NEW: Stored voice loops + floating waveforms + glitchy pop effects`, width - 20, height - 40);
-  text(`NEW: Refined blob tracking + faster oscilloscope fading`, width - 20, height - 55);
-  text(`SPACE=Record voice, V=Glitchy pop hook, B=Toggle blob tracking`, width - 20, height - 70);
-  textAlign(LEFT);
-}
-
-// NEW: Enhanced window resize handling
 function windowResized() {
   let canvasWidth = windowWidth;
   let canvasHeight = windowHeight;
   
-  // Maintain 16:9 aspect ratio
   if (canvasWidth / canvasHeight > 16/9) {
     canvasWidth = canvasHeight * (16/9);
   } else {
@@ -2146,7 +2107,6 @@ function windowResized() {
     video.size(canvasWidth, canvasHeight);
   }
   
-  // Update voice wave position to stay centered
   if (voiceWavePosition) {
     voiceWavePosition = {x: width / 2, y: height / 2};
     voiceWaveTarget = {x: width / 2, y: height / 2};
@@ -2208,7 +2168,7 @@ function keyPressed() {
     startJerseyClubKick();
   }
   
-  // NEW: Voice recording
+  // FIXED: Voice recording ONLY on spacebar
   if (key === ' ' && audioInitialized) {
     if (!isRecordingVoice) {
       startVoiceRecording();
@@ -2217,53 +2177,30 @@ function keyPressed() {
     }
   }
   
-  // NEW: Pop hook trigger
+  // Enhanced granular pop hook trigger
   if (key.toLowerCase() === 'v' && audioInitialized) {
-    triggerPopHook();
+    triggerEnhancedPopHook();
   }
   
-  // NEW: Toggle blob tracking
-  if (key.toLowerCase() === 'b') {
+  // Toggle blob tracking
+  if (key.toLowerCase() === 'g') {
     blobTrackingActive = !blobTrackingActive;
     console.log('Blob tracking:', blobTrackingActive ? 'ON' : 'OFF');
   }
   
   // Test functions
-  if (key.toLowerCase() === 'a' && audioInitialized) {
-    console.log("🎵 TESTING ENHANCED MELODY SYSTEM");
+  if (key.toLowerCase() === 't' && audioInitialized) {
+    console.log("🔔 TESTING AUDIO SYSTEM");
+    console.log("Playing test tone to verify audio output works...");
     
-    if (arpeggioSampler && arpeggioSampler.loaded) {
-      const testMelody = repeatingMelodies[0];
-      testMelody.notes.forEach((note, index) => {
-        const timing = testMelody.timings[index];
-        setTimeout(() => {
-          const velocity = 0.4 + Math.random() * 0.1;
-          arpeggioSampler.triggerAttackRelease(note, "16n", "+0", velocity);
-        }, timing * 125);
-      });
-      
-      if (stringsSampler && stringsSampler.loaded) {
-        const testStrings = stringsMelodies[0];
-        testStrings.notes.forEach((note, index) => {
-          const timing = testStrings.timings[index];
-          setTimeout(() => {
-            const velocity = 0.5 + Math.random() * 0.1;
-            stringsSampler.triggerAttackRelease(note, testStrings.duration, "+0", velocity);
-          }, timing * 125);
-        });
-      }
-      
-      if (vocalChoirSampler && vocalChoirSampler.loaded) {
-        const testChanting = hymnalChanting[0];
-        testChanting.notes.forEach((note, index) => {
-          const timing = testChanting.timings[index];
-          setTimeout(() => {
-            const velocity = 0.7 + Math.random() * 0.1;
-            vocalChoirSampler.triggerAttackRelease(note, testChanting.duration, "+0", velocity);
-          }, timing * 250);
-        });
-      }
-    }
+    const testOsc = new Tone.Oscillator(880, "sine");
+    testOsc.connect(masterGain);
+    testOsc.start();
+    setTimeout(() => {
+      testOsc.stop();
+      testOsc.dispose();
+      console.log("✓ Test tone finished - if you heard it, audio output works");
+    }, 1000);
   }
   
   if (key.toLowerCase() === 'h' && audioInitialized) {
@@ -2272,19 +2209,248 @@ function keyPressed() {
   }
 }
 
+function draw() {
+  background(0);
+  
+  // Video overlay (darker for better graphics visibility)
+  push();
+  tint(255, 40);
+  if (video) {
+    scale(-1, 1);
+    image(video, -width, 0, width, height);
+  }
+  pop();
+  
+  if (poses.length === 0) {
+    fill(255, 100);
+    textAlign(CENTER);
+    textSize(18);
+    text("Move into camera view", width/2, height/2 - 60);
+    
+    // Show debugging information
+    textSize(12);
+    fill(255, 150);
+    text("🔍 Debugging Info:", width/2, height/2 - 20);
+    
+    // Check video status
+    if (!video) {
+      fill(255, 100, 100);
+      text("❌ Video not initialized", width/2, height/2);
+    } else if (!video.elt) {
+      fill(255, 100, 100);
+      text("❌ Video element missing", width/2, height/2);
+    } else if (video.elt.readyState < 4) {
+      fill(255, 200, 100);
+      text(`⏳ Video loading... (state: ${video.elt.readyState}/4)`, width/2, height/2);
+    } else if (!modelLoaded) {
+      fill(255, 200, 100);
+      text("⏳ AI model loading...", width/2, height/2);
+    } else if (!poseDetectionStarted) {
+      fill(255, 200, 100);
+      text("⏳ Starting pose detection...", width/2, height/2);
+    } else {
+      fill(255, 200, 100);
+      text("👤 Please move into camera view", width/2, height/2);
+      text("Make sure you're well-lit and facing the camera", width/2, height/2 + 20);
+    }
+    
+    // Show system status
+    textSize(10);
+    fill(255, 100);
+    text(`Model: ${modelLoaded ? '✓' : '❌'} | Video: ${video && video.elt && video.elt.readyState === 4 ? '✓' : '❌'} | Detection: ${poseDetectionStarted ? '✓' : '❌'}`, width/2, height/2 + 50);
+    
+    textAlign(LEFT);
+    return;
+  }
+  
+  for (let i = 0; i < poses.length; i++) {
+    let pose = poses[i];
+    
+    armStretch = calculateArmStretch(pose);
+    handHeight = calculateHandHeight(pose);
+    palmDirection = calculatePalmDirection(pose);
+    motionAmount = calculateMotionAmount(pose);
+    motionAmountRaw = motionAmount;
+    jumpAmount = calculateJumpAmount(pose);
+    
+    // NEW: Calculate hip motion for body aura
+    hipMotionAmount = calculateHipMotion(pose);
+    
+    // NEW: Calculate New Jeans pose trigger
+    newJeansPoseActive = calculateNewJeansPose(pose);
+    
+    // NEW: Calculate blob tracking
+    calculateBlobTracking(pose);
+    
+    updateAudioFilters();
+    
+    // Draw skeleton (higher visibility)
+    if (connections && pose.keypoints) {
+      push();
+      scale(-1, 1);
+      stroke(255, 120);
+      strokeWeight(1.5);
+      
+      for (let j = 0; j < connections.length; j++) {
+        let pointAIndex = connections[j][0];
+        let pointBIndex = connections[j][1];
+        let pointA = pose.keypoints[pointAIndex];
+        let pointB = pose.keypoints[pointBIndex];
+        
+        if (pointA && pointB && pointA.confidence > 0.1 && pointB.confidence > 0.1) {
+          line(pointA.x, pointA.y, pointB.x, pointB.y);
+        }
+      }
+      pop();
+    }
+    
+    // Draw main oscilloscope pattern + trace buffer
+    if (audioInitialized && isPlaying && samplesLoaded) {
+      let visualScale = map(armStretchSmooth + motionAmountSmooth, 0, 2, 0.8, 2.5);
+      
+      // Enhanced fading for crisp oscilloscope lines
+      let fadeAmount = map(motionAmountSmooth, 0, 0.5, 120, 60);
+      traceBuffer.fill(0, 0, 0, fadeAmount);
+      traceBuffer.rect(0, 0, width, height);
+      
+      if (isBreakcoreActive) {
+        visualScale *= 1.5;
+        push();
+        let mirroredCenterX = width - bodyCenterSmooth.x;
+        translate(mirroredCenterX, bodyCenterSmooth.y);
+        stroke(255, 0, 0, 100);
+        strokeWeight(3);
+        noFill();
+        let breakRadius = sin(millis() * 0.01) * 50 + 100;
+        ellipse(0, 0, breakRadius, breakRadius);
+        
+        traceBuffer.push();
+        traceBuffer.translate(mirroredCenterX, bodyCenterSmooth.y);
+        traceBuffer.stroke(255, 0, 0, 100);
+        traceBuffer.strokeWeight(3);
+        traceBuffer.noFill();
+        traceBuffer.ellipse(0, 0, breakRadius, breakRadius);
+        traceBuffer.pop();
+        pop();
+      }
+      
+      let mirroredCenterX = width - bodyCenterSmooth.x;
+      
+      // Draw to both main canvas and trace buffer
+      drawOscilloscopePattern(mirroredCenterX, bodyCenterSmooth.y, visualScale);
+      drawOscilloscopePatternToBuffer(traceBuffer, mirroredCenterX, bodyCenterSmooth.y, visualScale);
+      
+      // NEW: Draw hip motion body aura
+      if (hipMotionSmooth > 0.1) {
+        drawHipMotionAura(mirroredCenterX, bodyCenterSmooth.y);
+      }
+      
+      // Draw hands + NEW hand-to-hand connections
+      const leftWrist = pose.keypoints[15];
+      const rightWrist = pose.keypoints[16];
+      
+      let leftHandValid = false, rightHandValid = false;
+      let leftHandX = 0, leftHandY = 0, rightHandX = 0, rightHandY = 0;
+      
+      if (leftWrist && leftWrist.confidence > 0.5) {
+        let targetLeftX = width - leftWrist.x;
+        leftHandSmooth.x = lerp(leftHandSmooth.x, targetLeftX, 0.1);
+        leftHandSmooth.y = lerp(leftHandSmooth.y, leftWrist.y, 0.1);
+        
+        let handScale = visualScale * 0.4;
+        drawSubtleHandPattern(leftHandSmooth.x, leftHandSmooth.y, handScale, false);
+        
+        leftHandValid = true;
+        leftHandX = leftHandSmooth.x;
+        leftHandY = leftHandSmooth.y;
+      }
+      
+      if (rightWrist && rightWrist.confidence > 0.5) {
+        let targetRightX = width - rightWrist.x;
+        rightHandSmooth.x = lerp(rightHandSmooth.x, targetRightX, 0.1);
+        rightHandSmooth.y = lerp(rightHandSmooth.y, rightWrist.y, 0.1);
+        
+        let handScale = visualScale * 0.4;
+        drawSubtleHandPattern(rightHandSmooth.x, rightHandSmooth.y, handScale, true);
+        
+        rightHandValid = true;
+        rightHandX = rightHandSmooth.x;
+        rightHandY = rightHandSmooth.y;
+      }
+      
+      // NEW: Draw hand-to-hand connections instead of hand-to-body
+      if (leftHandValid && rightHandValid) {
+        drawHandToHandConnection(leftHandX, leftHandY, rightHandX, rightHandY);
+      }
+      
+      // Draw the trace buffer
+      tint(255, 180);
+      image(traceBuffer, 0, 0);
+      noTint();
+    }
+    
+    // NEW: Draw blob tracking visualization
+    if (blobTrackingActive) {
+      drawBlobTracking();
+    }
+  }
+  
+  // NEW: Draw voice visualization
+  drawVoiceVisualization();
+  
+  if (audioInitialized) {
+    drawGestureMeters();
+  }
+  
+  // Visual mode info
+  fill(255, 150);
+  textAlign(RIGHT);
+  textSize(12);
+  text(`Visual: ${visualModes[visualMode]} (M to change)`, width - 20, height - 20);
+  
+  textSize(10);
+  text(`TRANCE-DECAY: Burial-style granular synthesis + enhanced hand tracking`, width - 20, height - 40);
+  text(`FIXED: No mic feedback + Hand-to-hand visuals + Hip motion aura`, width - 20, height - 55);
+  text(`SPACE=Voice (no feedback), V=Granular decay, Try New Jeans pose!`, width - 20, height - 70);
+  textAlign(LEFT);
+}
+
 function gotPoses(results) {
   try {
     if (results && results.length > 0) {
       poses = results;
+      
+      // Log first successful detection
       if (results[0] && results[0].keypoints && !window.debugLogged) {
-        console.log('✓ Pose detected!');
+        console.log('🎯 FIRST POSE DETECTED!');
+        console.log('Keypoints found:', results[0].keypoints.length);
+        console.log('Sample keypoint confidences:', {
+          nose: results[0].keypoints[0] ? results[0].keypoints[0].confidence : 'missing',
+          leftShoulder: results[0].keypoints[11] ? results[0].keypoints[11].confidence : 'missing',
+          rightShoulder: results[0].keypoints[12] ? results[0].keypoints[12].confidence : 'missing'
+        });
         window.debugLogged = true;
+        
+        // Remove any error messages
+        const existingErrors = document.querySelectorAll('[id*="error"], [class*="error"]');
+        existingErrors.forEach(el => el.remove());
       }
+      
+      // Periodic status logging
+      if (frameCount % 300 === 0) { // Every 10 seconds at 30fps
+        console.log(`📊 Pose detection status: ${results.length} poses detected, frame ${frameCount}`);
+      }
+      
     } else {
       poses = [];
+      
+      // Log if we suddenly stop detecting poses
+      if (window.debugLogged && frameCount % 60 === 0) {
+        console.log('⚠️ No poses detected in current frame');
+      }
     }
   } catch (error) {
-    console.error('Error in gotPoses:', error);
+    console.error('❌ Error in gotPoses:', error);
     poses = [];
   }
 }
