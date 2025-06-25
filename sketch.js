@@ -263,11 +263,11 @@ function setup() {
   let canvasWidth = windowWidth;
   let canvasHeight = windowHeight;
   
-  if (canvasWidth / canvasHeight > 16/9) {
-    canvasWidth = canvasHeight * (16/9);
-  } else {
-    canvasHeight = canvasWidth * (9/16);
-  }
+  // if (canvasWidth / canvasHeight > 16/9) {
+  //   canvasWidth = canvasHeight * (16/9);
+  // } else {
+  //   canvasHeight = canvasWidth * (9/16);
+  // }
   
   createCanvas(canvasWidth, canvasHeight);
   traceBuffer = createGraphics(canvasWidth, canvasHeight);
@@ -2953,11 +2953,11 @@ function windowResized() {
   let canvasWidth = windowWidth;
   let canvasHeight = windowHeight;
   
-  if (canvasWidth / canvasHeight > 16/9) {
-    canvasWidth = canvasHeight * (16/9);
-  } else {
-    canvasHeight = canvasWidth * (9/16);
-  }
+  // if (canvasWidth / canvasHeight > 16/9) {
+  //   canvasWidth = canvasHeight * (16/9);
+  // } else {
+  //   canvasHeight = canvasWidth * (9/16);
+  // }
   
   resizeCanvas(canvasWidth, canvasHeight);
   
