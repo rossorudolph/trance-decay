@@ -18,6 +18,7 @@ let glitchBeat;
 
 // FIXED: Mic input - NO LIVE FEEDBACK
 let micInput;
+let micEnabled = false; // Track mic state
 let micRecorder;
 let voiceLoop;
 let voiceGrainPlayer;
@@ -141,9 +142,15 @@ let rightHandSmooth = {x: 0, y: 0}; // FIXED: Store in display coordinates
 let handDistance = 0;
 let handDistanceSmooth = 0;
 
+// Pose stability system
+let lastGoodPose = null;
+let lastPoseTime = 0;
+let poseTimeout = 500; // Keep using last pose for 500ms when detection fails
+
 // Sample paths
 const samplePaths = {
   bass: "samples/ZEN_SIC_bass_synth_sub_one_shot_vibecity_C.wav",
+  //bass: "samples/bass_vibecity_c0.mp3",
   arpeggio: "samples/Srm_Crystal_falls2.wav",
   bell: "samples/bell_d4.wav",
   vocalChoir: "samples/epic_choir_f4.wav",
@@ -166,7 +173,7 @@ const jerseyClubBassNotes = ["C1", "C1", "F1", "C1", "G1", "C1", "F1", "G1"];
 const chordProgression = [
   ["F2", "A2", "C3", "F3"],    // F major - root
   ["C2", "E2", "G2", "C3"],    // C major - dominant  
-  ["Dm2", "F2", "A2", "D3"],   // D minor - relative minor
+  ["D2", "F2", "A2", "D3"],   // D minor - relative minor
   ["G2", "B2", "D3", "G3"]     // G major - leading back
 ];
 
@@ -246,7 +253,7 @@ let currentChordIndex = 0;
 
 function preload() {
   // Load the pose outline image
-  njPoseImage = loadImage("samples/njpose.png", 
+  njPoseImage = loadImage("samples/njpose.svg", 
     () => console.log("✓ New Jeans pose image loaded"), 
     () => console.warn("⚠️ Could not load njpose.png from samples folder")
   );
@@ -266,17 +273,16 @@ function setup() {
   traceBuffer = createGraphics(canvasWidth, canvasHeight);
   handTraceBuffer = createGraphics(canvasWidth, canvasHeight);
   
-  console.log("🎥 Setting up HIGH QUALITY video capture for installation...");
-  
-  // INSTALLATION: Force high quality video capture
-  video = createCapture({
-    video: {
-      width: 1920,        // Higher resolution
-      height: 1080,       // Higher resolution
-      facingMode: "user",
-      frameRate: 30       // Ensure smooth framerate
-    }
-  }, videoReady);
+console.log("🎥 Setting up video capture for installation...");
+
+// INSTALLATION: Use original working settings for camera selection
+video = createCapture({
+  video: {
+    width: 1280,
+    height: 960,
+    facingMode: "user"
+  }
+}, videoReady);
   
   if (video) {
     video.hide();
@@ -527,16 +533,17 @@ function drawHandHeightLines(handX, handY, heightValue) {
   //scale(1, -1); // Flip crescents vertically so they emanate from the hands
   
   // Draw 3-5 crescent waveforms that emanate and dissolve
-  let numCrescents = Math.floor(map(intensity, 0, 1, 2, 5));
+  //let numCrescents = Math.floor(map(intensity, 0, 1, 2, 5));
+  let numCrescents = 1;
   
   for (let crescentIndex = 0; crescentIndex < numCrescents; crescentIndex++) {
     let crescentDistance = (crescentIndex + 1) * 30; // Distance from hand
-    let crescentY = isUpward ? -crescentDistance : crescentDistance;
+    let crescentY = isUpward ? -crescentDistance : crescentDistance; // Keep original positioning
     
     // Fade out as crescents get further from hand
     let alpha = map(crescentIndex, 0, numCrescents, 180, 40);
     
-    stroke(255, 255, 255, alpha * intensity);
+    stroke(255, 255, 255, (alpha * intensity) * 0.4); // Much dimmer
     strokeWeight(map(intensity, 0, 1, 0.8, 1.8));
     noFill();
     
@@ -563,7 +570,7 @@ function drawHandHeightLines(handX, handY, heightValue) {
       let dissolutionWave = sin(progress * PI * 3 + timeOffset) * intensity * 3;
       
       let x = baseX + dissolutionWave;
-      let y = crescentY + (isUpward ? crescentHeight : -crescentHeight) + audioWave;
+      let y = crescentY + (isUpward ? -crescentHeight : crescentHeight) + audioWave; // Flipped curve direction
       
       vertex(x, y);
     }
@@ -590,7 +597,7 @@ function drawHandHeightLines(handX, handY, heightValue) {
         let dissolutionWave = sin(progress * PI * 2 + timeOffset) * intensity * 2;
         
         let x = baseX + dissolutionWave;
-        let y = crescentY * 0.7 + (isUpward ? crescentHeight : -crescentHeight) + audioWave;
+        let y = crescentY * 0.7 + (isUpward ? -crescentHeight : crescentHeight) + audioWave; // Flipped accent direction
         
         vertex(x, y);
       }
@@ -664,145 +671,135 @@ function drawNewJeansPoseFlash() {
     let flashIntensity = map(millis() - newJeansPoseFlashTime, 0, 500, 1, 0);
     
     push();
-    const leftWrist = poses[0] ? poses[0].keypoints[15] : null;
-    const rightWrist = poses[0] ? poses[0].keypoints[16] : null;
     
-    if (leftWrist && rightWrist && leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5 && audioAnalyzer) {
-      let leftX = width - leftWrist.x;
-      let rightX = width - rightWrist.x;
+    // Draw growing pose outline using SVG
+    if (njPoseImage && poses[0] && blobTrackingActive) {
+      const pose = poses[0];
+      const leftShoulder = pose.keypoints[11];
+      const rightShoulder = pose.keypoints[12];
+      const leftHip = pose.keypoints[23];
+      const rightHip = pose.keypoints[24];
       
-      const spectrum = audioAnalyzer.getValue();
-      
-      // Use oscilloscope shapes instead of circles - LEFT HAND
-      push();
-      translate(leftX, leftWrist.y);
-      
-      let handScale = flashIntensity * 120; // Growing multiplier
-      
-      stroke(255, 150, 255, 160 * flashIntensity);
-      strokeWeight(2 * flashIntensity);
-      noFill();
-      
-      beginShape();
-      for (let i = 0; i < spectrum.length; i += 3) {
-        let angle = map(i, 0, spectrum.length, 0, TWO_PI);
-        let intensity = (spectrum[i] + 100) / 100;
-        let radius = intensity * handScale;
+      if (leftShoulder && rightShoulder && leftHip && rightHip &&
+          leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
         
-        let x = cos(angle) * radius;
-        let y = sin(angle) * radius;
+        // Calculate center position
+        const shoulderCenterX = (leftShoulder.x + rightShoulder.x) / 2;
+        const shoulderCenterY = (leftShoulder.y + rightShoulder.y) / 2;
+        const hipCenterX = (leftHip.x + rightHip.x) / 2;
+        const hipCenterY = (leftHip.y + rightHip.y) / 2;
+        const bodyCenterX = (shoulderCenterX + hipCenterX) / 2;
+        const bodyCenterY = (shoulderCenterY + hipCenterY) / 2;
         
-        vertex(x, y);
-      }
-      endShape(CLOSE);
-      
-      // Secondary oscilloscope pattern
-      stroke(255, 200, 255, 120 * flashIntensity);
-      strokeWeight(1.5 * flashIntensity);
-      beginShape();
-      for (let i = 0; i < spectrum.length; i += 6) {
-        let angle = map(i, 0, spectrum.length, 0, TWO_PI);
-        let intensity = (spectrum[i] + 100) / 100;
-        let radius = intensity * handScale * 1.5;
+        const videoScaleX = width / (video ? video.width : width);
+        const videoScaleY = height / (video ? video.height : height);
+        let displayX = width - (bodyCenterX * videoScaleX);
+        let displayY = bodyCenterY * videoScaleY;
         
-        let x = cos(angle) * radius;
-        let y = sin(angle) * radius;
-        
-        vertex(x, y);
-      }
-      endShape();
-      pop();
-      
-      // Use oscilloscope shapes instead of circles - RIGHT HAND
-      push();
-      translate(rightX, rightWrist.y);
-      
-      stroke(255, 150, 255, 160 * flashIntensity);
-      strokeWeight(2 * flashIntensity);
-      noFill();
-      
-      beginShape();
-      for (let i = 0; i < spectrum.length; i += 3) {
-        let angle = map(i, 0, spectrum.length, 0, TWO_PI);
-        let intensity = (spectrum[i] + 100) / 100;
-        let radius = intensity * handScale;
-        
-        let x = cos(angle) * radius;
-        let y = sin(angle) * radius;
-        
-        vertex(x, y);
-      }
-      endShape(CLOSE);
-      
-      // Secondary oscilloscope pattern
-      stroke(255, 200, 255, 120 * flashIntensity);
-      strokeWeight(1.5 * flashIntensity);
-      beginShape();
-      for (let i = 0; i < spectrum.length; i += 6) {
-        let angle = map(i, 0, spectrum.length, 0, TWO_PI);
-        let intensity = (spectrum[i] + 100) / 100;
-        let radius = intensity * handScale * 1.5;
-        
-        let x = cos(angle) * radius;
-        let y = sin(angle) * radius;
-        
-        vertex(x, y);
-      }
-      endShape();
-      pop();
-      
-      // Add sparkle effect with smaller oscilloscope patterns
-      for (let i = 0; i < 4; i++) {
-        let sparkleX = leftX + random(-60, 60) * flashIntensity;
-        let sparkleY = leftWrist.y + random(-60, 60) * flashIntensity;
+        // Growing effect
+        let growthFactor = map(flashIntensity, 1, 0, 1, 2.5); // Grows as it fades
+        let fillAmount = map(flashIntensity, 1, 0.3, 0, 1); // Fills in over time
         
         push();
-        translate(sparkleX, sparkleY);
-        stroke(255, 255, 255, 120 * flashIntensity);
-        strokeWeight(0.8 * flashIntensity);
-        noFill();
+        translate(displayX, displayY);
         
-        let miniScale = handScale * 0.15;
-        beginShape();
-        for (let j = 0; j < spectrum.length; j += 8) {
-          let angle = map(j, 0, spectrum.length, 0, TWO_PI);
-          let intensity = (spectrum[j] + 100) / 100;
-          let radius = intensity * miniScale;
-          
-          let x = cos(angle) * radius;
-          let y = sin(angle) * radius;
-          vertex(x, y);
+        // Size to match bounding box
+        const boxWidth = bodyBoundingBox.width * videoScaleX;
+        const boxHeight = bodyBoundingBox.height * videoScaleY;
+        const imageAspect = njPoseImage.width / njPoseImage.height;
+        const boxAspect = boxWidth / boxHeight;
+        
+        let finalWidth, finalHeight;
+        if (imageAspect > boxAspect) {
+          finalWidth = boxWidth * 0.8 * growthFactor;
+          finalHeight = finalWidth / imageAspect;
+        } else {
+          finalHeight = boxHeight * 0.8 * growthFactor;
+          finalWidth = finalHeight * imageAspect;
         }
-        endShape(CLOSE);
-        pop();
         
-        // Same for right hand
-        sparkleX = rightX + random(-60, 60) * flashIntensity;
-        sparkleY = rightWrist.y + random(-60, 60) * flashIntensity;
-        
-        push();
-        translate(sparkleX, sparkleY);
-        stroke(255, 255, 255, 120 * flashIntensity);
-        strokeWeight(0.8 * flashIntensity);
-        noFill();
-        
-        beginShape();
-        for (let j = 0; j < spectrum.length; j += 8) {
-          let angle = map(j, 0, spectrum.length, 0, TWO_PI);
-          let intensity = (spectrum[j] + 100) / 100;
-          let radius = intensity * miniScale;
-          
-          let x = cos(angle) * radius;
-          let y = sin(angle) * radius;
-          vertex(x, y);
+        // Draw growing SVG pose (no rectangle outline)
+        if (fillAmount > 0) {
+          tint(255, 100, 255, 180 * fillAmount * flashIntensity);
+        } else {
+          tint(255, 100, 255, 255 * flashIntensity); // Show outline version
         }
-        endShape(CLOSE);
+        imageMode(CENTER);
+        image(njPoseImage, 0, 0, finalWidth, finalHeight);
+        noTint();
+        
         pop();
       }
     }
+    
+    // EXISTING: Hand oscilloscope effects
+    // const leftWrist = poses[0] ? poses[0].keypoints[15] : null;
+    // const rightWrist = poses[0] ? poses[0].keypoints[16] : null;
+    
+    // UPDATED: Hand tracking with FIXED coordinate system  
+    const leftWrist = pose.keypoints[15];  // Changed from poses[0].keypoints[15]
+    const rightWrist = pose.keypoints[16]; // Changed from poses[0].keypoints[16]
+    
+    if (leftWrist && rightWrist && leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5 && audioAnalyzer) {
+      const videoScaleX = width / (video ? video.width : width);
+      const videoScaleY = height / (video ? video.height : height);
+
+      let leftX = width - (leftWrist.x * videoScaleX);
+      let rightX = width - (rightWrist.x * videoScaleX);
+      
+      const spectrum = audioAnalyzer.getValue();
+      
+      // Enhanced hand oscilloscope effects for pose success
+      let handScale = flashIntensity * 200; // Bigger for pose success
+      
+      // LEFT HAND
+      push();
+      translate(leftX, leftWrist.y * videoScaleY);
+      
+      stroke(255, 100, 255, 255 * flashIntensity); // Brighter
+      strokeWeight(4 * flashIntensity); // Thicker
+      noFill();
+      
+      beginShape();
+      for (let i = 0; i < spectrum.length; i += 3) {
+        let angle = map(i, 0, spectrum.length, 0, TWO_PI);
+        let intensity = (spectrum[i] + 100) / 100;
+        let radius = intensity * handScale;
+        
+        let x = cos(angle) * radius;
+        let y = sin(angle) * radius;
+        vertex(x, y);
+      }
+      endShape(CLOSE);
+      pop();
+      
+      // RIGHT HAND
+      push();
+      translate(rightX, rightWrist.y * videoScaleY);
+      
+      stroke(255, 100, 255, 255 * flashIntensity);
+      strokeWeight(4 * flashIntensity);
+      noFill();
+      
+      beginShape();
+      for (let i = 0; i < spectrum.length; i += 3) {
+        let angle = map(i, 0, spectrum.length, 0, TWO_PI);
+        let intensity = (spectrum[i] + 100) / 100;
+        let radius = intensity * handScale;
+        
+        let x = cos(angle) * radius;
+        let y = sin(angle) * radius;
+        vertex(x, y);
+      }
+      endShape(CLOSE);
+      pop();
+    }
+    
     pop();
   }
 }
+
+
 
 // NEW: Draw pose encouragement overlay (State 2) - MINIMAL and GLITCHY with BOUNDING BOX sizing and CENTERED positioning
 function drawPoseEncouragement() {
@@ -873,7 +870,9 @@ function drawPoseEncouragement() {
       // Minimal opacity variation
       let alpha = 100 + random(-10, 10);
       
-      tint(255, 255, 255, alpha); // White tint
+
+      // Draw the image
+      tint(255, 255, 255, alpha);
       imageMode(CENTER);
       image(njPoseImage, 0, 0, finalWidth, finalHeight);
       
@@ -885,8 +884,8 @@ function drawPoseEncouragement() {
 
 // Spectral Flow patterns
 function drawSpectralFlow(spectrum, visualScale) {
-  stroke(255, 180);
-  strokeWeight(0.8 + visualScale * 0.003);
+  stroke(255, 255);
+  strokeWeight(1.8 + visualScale * 0.006);
   noFill();
   
   let segments = 16;
@@ -899,8 +898,8 @@ function drawSpectralFlow(spectrum, visualScale) {
     let rotationSpeed = 1 + gestureInfluence * 2;
     let complexityMod = 1 + palmDirection * 0.3;
     
-    stroke(255, 180);
-    strokeWeight(0.8 + visualScale * 0.003);
+    stroke(255, 255);
+    strokeWeight(1.8 + visualScale * 0.006);
     
     beginShape();
     for (let i = startIdx; i < endIdx; i++) {
@@ -1022,16 +1021,19 @@ function updateAudioFilters() {
     choirGate.frequency.rampTo(gateRate * 1.5, 0.2);
   }
   
-  // FIXED: Hand raise synth triggers
-  if (handHeightSmooth > 0.4 && millis() - lastTwinkleTime > 1000) {
-    triggerHarmonicHandRaiseSynth();
-    lastTwinkleTime = millis();
-  }
+ // Disable hand raise synth in early states
+if (handHeightSmooth > 0.4 && millis() - lastTwinkleTime > 1000 && currentState >= 3) {
+  triggerHarmonicHandRaiseSynth();
+  lastTwinkleTime = millis();
+}
   
-  if (handHeightSmooth > 0.6 && millis() - lastJumpTime > 4000 && !jerseyClubActive) {
-    startJerseyClubKick();
-    lastJumpTime = millis();
-  }
+  // Disable jersey club in early states and first 40 seconds of music
+const musicElapsed = isPlaying ? (millis() - stateStartTime) : 0;
+if (handHeightSmooth > 0.6 && millis() - lastJumpTime > 4000 && !jerseyClubActive && 
+    currentState >= 3 && musicElapsed > 40000) {
+  startJerseyClubKick();
+  lastJumpTime = millis();
+}
   
   if (jumpAmount > jumpThreshold && millis() - lastJumpTime > 5000 && !isBreakcoreActive) {
     startBreakcore();
@@ -1045,25 +1047,33 @@ function updateAudioFilters() {
 // FIXED: Trigger hand raise synth with proper volume and connection - REDUCED KICK
 function triggerHarmonicHandRaiseSynth() {
   if (!audioInitialized) return;
-  
+
   const handRangeNormalized = map(handHeightSmooth, 0.4, 1.0, 0.3, 1.0);
   const kickVelocity = constrain(handRangeNormalized, 0.3, 1.0);
-  
+
   const nextOffBeat = Tone.getTransport().nextSubdivision("8n");
-  
+
   Tone.getTransport().schedule((time) => {
     // REDUCED: Much quieter kick trigger for hand raise
     if (kickSampler && kickSampler.loaded) {
-      kickSampler.triggerAttackRelease("C1", "16n", time, kickVelocity * 0.2); // Much quieter
+      kickSampler.triggerAttackRelease("C1", "16n", time, kickVelocity * 0.2);
     }
-    
+
     // FIXED: Hand raise screech synth trigger
     if (handRaiseSynth && handRaiseSynth.loaded) {
       const currentChord = chordProgression[currentChordIndex % chordProgression.length];
-      const harmNote = currentChord[2];
-      const screechNote = harmNote.replace('2', '4').replace('3', '4'); // Higher octave for screech
-      handRaiseSynth.triggerAttackRelease(screechNote, "8n", time, kickVelocity * 0.8);
-      console.log(`🔥 Hand raise screech: ${screechNote} @ velocity ${kickVelocity}`);
+      if (currentChord && currentChord[2]) {
+        const harmNote = currentChord[2];
+        const screechNote = typeof harmNote === 'string' ? harmNote.replace('2', '4').replace('3', '4') : null;
+        if (screechNote) {
+          handRaiseSynth.triggerAttackRelease(screechNote, "8n", time, kickVelocity * 0.8);
+          console.log(`🔥 Hand raise screech: ${screechNote} @ velocity ${kickVelocity}`);
+        } else {
+          console.warn('⚠️ screechNote is invalid:', screechNote);
+        }
+      } else {
+        console.warn('⚠️ currentChord or currentChord[2] is invalid:', currentChord);
+      }
     }
   }, nextOffBeat);
 }
@@ -1107,14 +1117,14 @@ function startAmbientMusic() {
   }
   
   // 3. Add subtle kick after 8 seconds
-  setTimeout(() => {
-    if (isPlaying) {
-      Tone.getTransport().scheduleRepeat((time) => {
-        kickSampler.triggerAttackRelease("C1", "8n", time, 0.3);
-      }, "1m");
-      console.log("🥁 Added kick after 8 seconds");
-    }
-  }, 8000);
+setTimeout(() => {
+  if (isPlaying) {
+    Tone.getTransport().scheduleRepeat((time) => {
+      kickSampler.triggerAttackRelease("C1", "8n", time, 0.2); // Quieter
+    }, "2m"); // Less frequent - every 2 measures instead of every measure
+    console.log("🥁 Added subtle kick after 20 seconds");
+  }
+}, 20000);
   
   // 4. Add strings after 16 seconds
   setTimeout(() => {
@@ -2568,8 +2578,8 @@ function drawVoiceVisualization() {
 function drawMotionEncouragement() {
   if (currentState !== 4) return;
   
-  // Position left-justified 
-  let leftX = 40;
+  // Center horizontally
+  let centerX = width / 2;
   let topY = 80;
   
   push();
@@ -2577,33 +2587,32 @@ function drawMotionEncouragement() {
   if (motionThresholdMet) {
     // Success state - minimal
     fill(100, 255, 100, 200);
-    textAlign(LEFT);
+    textAlign(CENTER);
     textSize(16);
-    text("✓ good", leftX, topY);
+    text("✓ good", centerX, topY);
   } else {
     // Encouragement state - minimal lowercase
     fill(255, 255, 255, 200);
-    textAlign(LEFT);
+    textAlign(CENTER);
     textSize(16); // Smaller, minimal
-    text("motion", leftX, topY);
+    text("motion", centerX, topY);
     
-    // Two small animated arrows to the left
-    let arrowX = leftX - 25;
-    let arrowY = topY - 8;
+    // Two small animated arrows centered below the text
+    let arrowY = topY + 18;
     let animOffset = sin(millis() * 0.015) * 3; // Smaller animation
     
     stroke(100, 255, 100, 200);
     strokeWeight(1.5); // Thinner
     noFill();
     
-    // Two small arrows
+    // Two small arrows, centered
+    let arrowSpacing = 16;
+    let arrowStartX = centerX - arrowSpacing / 2;
     for (let i = 0; i < 2; i++) {
-      let currentArrowX = arrowX - (i * 8);
+      let currentArrowX = arrowStartX + i * arrowSpacing;
       let currentY = arrowY + animOffset;
-      
       // Small arrow shaft
       line(currentArrowX, currentY + 6, currentArrowX, currentY - 4);
-      
       // Small arrow head
       line(currentArrowX, currentY - 4, currentArrowX - 2, currentY - 1);
       line(currentArrowX, currentY - 4, currentArrowX + 2, currentY - 1);
@@ -2990,6 +2999,23 @@ function windowResized() {
 }
 
 function keyPressed() {
+  if (key.toLowerCase() === 'm' && audioInitialized) {
+    micEnabled = !micEnabled;
+    if (micEnabled) {
+      if (micInput && voiceEffectsChain) {
+        micInput.open().then(() => {
+          micInput.connect(voiceEffectsChain);
+          console.log('🎤 Mic input enabled');
+        });
+      }
+    } else {
+      if (micInput && voiceEffectsChain) {
+        micInput.disconnect();
+        micInput.close();
+        console.log('🎤 Mic input disabled');
+      }
+    }
+  }
   if (key.toLowerCase() === 'm') {
     visualMode = (visualMode + 1) % visualModes.length;
     console.log('Visual mode:', visualModes[visualMode]);
@@ -3083,19 +3109,31 @@ tint(255, 200); // Always slightly dimmed
   }
   pop();
   
-  if (poses.length === 0) {
-  // Dark overlay to match the darkness when poses are detected
-  push();
-  fill(0, 0, 0, 120); // Same darkness as when visual elements overlay the video
-  rect(0, 0, width, height);
-  pop();
-  
-  // Only show meters if in debug mode
-  if (audioInitialized) {
-    drawMinimalMeters();
+  // Use last good pose if detection failed recently
+if (poses.length === 0) {
+  if (lastGoodPose && (millis() - lastPoseTime < poseTimeout)) {
+    // Use last good pose data to maintain visual continuity
+    poses = [lastGoodPose];
+    console.log("Using last good pose data for visual continuity");
+  } else {
+    // No recent pose data - show dark overlay
+    push();
+    fill(0, 0, 0, 120);
+    rect(0, 0, width, height);
+    pop();
+    
+    if (audioInitialized) {
+      drawMinimalMeters();
+    }
+    drawStateOverlays();
+    return;
   }
-  drawStateOverlays();
-  return;
+}
+
+// Store last good pose when detection is working
+if (poses.length > 0) {
+  lastGoodPose = JSON.parse(JSON.stringify(poses[0])); // Deep copy
+  lastPoseTime = millis();
 }
   
   // Update state system
@@ -3104,8 +3142,8 @@ tint(255, 200); // Always slightly dimmed
   for (let i = 0; i < poses.length; i++) {
     let pose = poses[i];
     
-    // Check for full body detection
-    checkFullBodyDetection(pose);
+    // Check for full body detection (any person counts)
+if (i === 0) checkFullBodyDetection(pose); // Only check state once
     
     armStretch = calculateArmStretch(pose);
     handHeight = calculateHandHeight(pose);
@@ -3117,18 +3155,23 @@ tint(255, 200); // Always slightly dimmed
     // Calculate hip motion for body aura
     hipMotionAmount = calculateHipMotion(pose);
     
-    // Calculate New Jeans pose trigger (only in state 2 and after 30 seconds)
-    if (currentState === 2) {
-      const elapsed = millis() - stateStartTime;
-      if (elapsed >= 30000) { // Only allow pose trigger after 30 seconds
-        newJeansPoseActive = calculateNewJeansPose(pose);
-      }
+    // Calculate New Jeans pose trigger for ANY person (only in state 2 and after 30 seconds)
+if (currentState === 2) {
+  const elapsed = millis() - stateStartTime;
+  if (elapsed >= 30000) { // Only allow pose trigger after 30 seconds
+    newJeansPoseActive = calculateNewJeansPose(pose);
+    if (newJeansPoseActive && !popHookActive) {
+      triggerEnhancedPopHook();
+      changeState(3);
     }
+  }
+}
     
     // Calculate blob tracking
     calculateBlobTracking(pose);
     
-    updateAudioFilters();
+    // Only update audio once per frame, using combined data from all people
+    if (i === poses.length - 1) updateAudioFilters();
     
     // Draw skeleton (higher visibility)
     if (connections && pose.keypoints) {
