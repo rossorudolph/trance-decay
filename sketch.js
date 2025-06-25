@@ -671,10 +671,12 @@ function drawNewJeansPoseFlash() {
     let flashIntensity = map(millis() - newJeansPoseFlashTime, 0, 500, 1, 0);
     
     push();
-    
+    const pose = poses[0]; // Define pose at function scope
+
+
     // Draw growing pose outline using SVG
-    if (njPoseImage && poses[0] && blobTrackingActive) {
-      const pose = poses[0];
+    if (njPoseImage && pose && blobTrackingActive) {
+      // Removed the const pose = poses[0]; line
       const leftShoulder = pose.keypoints[11];
       const rightShoulder = pose.keypoints[12];
       const leftHip = pose.keypoints[23];
@@ -3168,7 +3170,23 @@ if (currentState === 2) {
 }
     
     // Calculate blob tracking
-    calculateBlobTracking(pose);
+calculateBlobTracking(pose);
+
+    // ADD THIS: Draw individual oscilloscope for each person
+    if (audioInitialized && isPlaying && samplesLoaded) {
+      const leftShoulder = pose.keypoints[11];
+      const rightShoulder = pose.keypoints[12];
+      if (leftShoulder && rightShoulder && leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
+        const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+        const centerY = (leftShoulder.y + rightShoulder.y) / 2;
+        let individualBodyCenter = {x: centerX, y: centerY};
+        
+        let visualScale = map(armStretchSmooth + motionAmountSmooth, 0, 2, 0.8, 2.5);
+        let centralVisualScale = visualScale * 2.5;
+        drawOscilloscopePattern(individualBodyCenter.x, individualBodyCenter.y, centralVisualScale);
+        drawOscilloscopePatternToBuffer(traceBuffer, individualBodyCenter.x, individualBodyCenter.y, centralVisualScale);
+      }
+    }
     
     // Only update audio once per frame, using combined data from all people
     if (i === poses.length - 1) updateAudioFilters();
@@ -3229,9 +3247,9 @@ if (currentState === 2) {
       }
       
       // MAIN: Draw center oscilloscope on body (prominent) - FIXED coordinates with 2.5x multiplier
-      let centralVisualScale = visualScale * 2.5; // 2.5x multiplier for prominence
-      drawOscilloscopePattern(bodyCenterSmooth.x, bodyCenterSmooth.y, centralVisualScale);
-      drawOscilloscopePatternToBuffer(traceBuffer, bodyCenterSmooth.x, bodyCenterSmooth.y, centralVisualScale);
+      // let centralVisualScale = visualScale * 2.5; // 2.5x multiplier for prominence
+      // drawOscilloscopePattern(bodyCenterSmooth.x, bodyCenterSmooth.y, centralVisualScale);
+      // drawOscilloscopePatternToBuffer(traceBuffer, bodyCenterSmooth.x, bodyCenterSmooth.y, centralVisualScale);
       
       // Add decay visualization overlay around body center - FIXED coordinates
       if (popHookActive) {
