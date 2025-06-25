@@ -577,32 +577,6 @@ function drawHandHeightLines(handX, handY, heightValue) {
     
     endShape();
     
-    // Add smaller accent crescents
-    if (crescentIndex < 2) {
-      stroke(255, 255, 255, alpha * intensity * 0.6);
-      strokeWeight(0.6);
-      
-      beginShape();
-      for (let i = 0; i <= crescentPoints; i++) {
-        let progress = i / crescentPoints;
-        let baseX = map(progress, 0, 1, -crescentWidth/3, crescentWidth/3);
-        
-        let crescentHeight = sin(progress * PI) * map(intensity, 0, 1, 8, 16);
-        
-        let specIndex = Math.floor(map(progress, 0, 1, 0, spectrum.length - 1));
-        let audioIntensity = (spectrum[specIndex] + 100) / 100;
-        let audioWave = audioIntensity * intensity * 4;
-        
-        let timeOffset = millis() * 0.012 + crescentIndex * 0.3;
-        let dissolutionWave = sin(progress * PI * 2 + timeOffset) * intensity * 2;
-        
-        let x = baseX + dissolutionWave;
-        let y = crescentY * 0.7 + (isUpward ? -crescentHeight : crescentHeight) + audioWave; // Flipped accent direction
-        
-        vertex(x, y);
-      }
-      endShape();
-    }
   }
   
   pop();
@@ -807,9 +781,9 @@ function drawNewJeansPoseFlash() {
 function drawPoseEncouragement() {
   if (currentState !== 2 || !njPoseImage) return;
   
-  // Wait 30 seconds before showing (to match state 2 timing)
+  // Wait 50 seconds before showing (to match state 2 timing)
   const elapsed = millis() - stateStartTime;
-  if (elapsed < 30000) return;
+  if (elapsed < 50000) return;
   
   // Reduced blinking frequency - 10% chance to show each frame
   let shouldShow = random() < 0.1;
@@ -887,7 +861,7 @@ function drawPoseEncouragement() {
 // Spectral Flow patterns
 function drawSpectralFlow(spectrum, visualScale) {
   stroke(255, 255);
-  strokeWeight(1.8 + visualScale * 0.006);
+  strokeWeight(2.4 + visualScale * 0.008);
   noFill();
   
   let segments = 16;
@@ -901,7 +875,7 @@ function drawSpectralFlow(spectrum, visualScale) {
     let complexityMod = 1 + palmDirection * 0.3;
     
     stroke(255, 255);
-    strokeWeight(1.8 + visualScale * 0.006);
+    strokeWeight(2.4 + visualScale * 0.008);
     
     beginShape();
     for (let i = startIdx; i < endIdx; i++) {
@@ -926,7 +900,7 @@ function drawSpectralFlow(spectrum, visualScale) {
     endShape();
     
     if (seg < segments - 1) {
-      stroke(255, 40);
+      stroke(255, 120);
       strokeWeight(0.2);
       let angle1 = map(seg, 0, segments, 0, TWO_PI);
       let angle2 = map(seg + 1, 0, segments, 0, TWO_PI);
@@ -936,16 +910,19 @@ function drawSpectralFlow(spectrum, visualScale) {
   }
   
   // NEW: Add pink line overlay when New Jeans is playing
-  if (popHookActive) {
-    stroke(255, 100, 255, 120);
-    strokeWeight(1.5);
+  // NEW: Add multiple pink lines when New Jeans is playing
+if (popHookActive) {
+  // Draw 3 pink patterns for more visibility
+  for (let pattern = 0; pattern < 3; pattern++) {
+    stroke(255, 100, 255, 200); // Brighter pink
+    strokeWeight(2.0 + pattern * 0.5); // Varying thickness
     noFill();
     
     beginShape();
-    for (let i = 0; i < spectrum.length; i += 2) {
+    for (let i = pattern; i < spectrum.length; i += 3) {
       let angle = map(i, 0, spectrum.length, 0, TWO_PI);
       let intensity = (spectrum[i] + 100) / 100;
-      let radius = intensity * visualScale * 80;
+      let radius = intensity * visualScale * (90 + pattern * 20); // Varying sizes
       
       let x = cos(angle) * radius;
       let y = sin(angle) * radius;
@@ -954,6 +931,8 @@ function drawSpectralFlow(spectrum, visualScale) {
     }
     endShape(CLOSE);
   }
+}
+
 }
 
 // UPDATED: Audio filters with glitch beat volume reduction during New Jeans
@@ -1058,7 +1037,7 @@ function triggerHarmonicHandRaiseSynth() {
   Tone.getTransport().schedule((time) => {
     // REDUCED: Much quieter kick trigger for hand raise
     if (kickSampler && kickSampler.loaded) {
-      kickSampler.triggerAttackRelease("C1", "16n", time, kickVelocity * 0.2);
+      kickSampler.triggerAttackRelease("C0", "16n", time, kickVelocity * 0.2);
     }
 
     // FIXED: Hand raise screech synth trigger
@@ -1122,7 +1101,7 @@ function startAmbientMusic() {
 setTimeout(() => {
   if (isPlaying) {
     Tone.getTransport().scheduleRepeat((time) => {
-      kickSampler.triggerAttackRelease("C1", "8n", time, 0.2); // Quieter
+      kickSampler.triggerAttackRelease("C0", "8n", time, 0.2); // Quieter
     }, "2m"); // Less frequent - every 2 measures instead of every measure
     console.log("🥁 Added subtle kick after 20 seconds");
   }
@@ -3160,7 +3139,7 @@ if (i === 0) checkFullBodyDetection(pose); // Only check state once
     // Calculate New Jeans pose trigger for ANY person (only in state 2 and after 30 seconds)
 if (currentState === 2) {
   const elapsed = millis() - stateStartTime;
-  if (elapsed >= 30000) { // Only allow pose trigger after 30 seconds
+  if (elapsed >= 50000) { // Only allow pose trigger after 50 seconds
     newJeansPoseActive = calculateNewJeansPose(pose);
     if (newJeansPoseActive && !popHookActive) {
       triggerEnhancedPopHook();
@@ -3172,21 +3151,36 @@ if (currentState === 2) {
     // Calculate blob tracking
 calculateBlobTracking(pose);
 
-    // ADD THIS: Draw individual oscilloscope for each person
-    if (audioInitialized && isPlaying && samplesLoaded) {
-      const leftShoulder = pose.keypoints[11];
-      const rightShoulder = pose.keypoints[12];
-      if (leftShoulder && rightShoulder && leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
-        const centerX = (leftShoulder.x + rightShoulder.x) / 2;
-        const centerY = (leftShoulder.y + rightShoulder.y) / 2;
-        let individualBodyCenter = {x: centerX, y: centerY};
-        
-        let visualScale = map(armStretchSmooth + motionAmountSmooth, 0, 2, 0.8, 2.5);
-        let centralVisualScale = visualScale * 2.5;
-        drawOscilloscopePattern(individualBodyCenter.x, individualBodyCenter.y, centralVisualScale);
-        drawOscilloscopePatternToBuffer(traceBuffer, individualBodyCenter.x, individualBodyCenter.y, centralVisualScale);
-      }
+// Draw individual oscilloscope for each person (using individual calculations)
+if (audioInitialized && isPlaying && samplesLoaded) {
+  const leftShoulder = pose.keypoints[11];
+  const rightShoulder = pose.keypoints[12];
+  if (leftShoulder && rightShoulder && leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
+    const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+    const centerY = (leftShoulder.y + rightShoulder.y) / 2;
+    
+    // Calculate individual arm stretch for this person
+    const leftWrist = pose.keypoints[15];
+    const rightWrist = pose.keypoints[16];
+    let individualArmStretch = 0;
+    if (leftWrist && rightWrist && leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
+      const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
+      const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
+      const avgDistance = (leftDistance + rightDistance) / 2;
+      const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
+      individualArmStretch = constrain(avgDistance / (shoulderWidth * 1.8), 0, 1);
     }
+    
+    let individualVisualScale = map(individualArmStretch, 0, 2, 0.8, 2.5);
+    let centralVisualScale = individualVisualScale * 2.5;
+    
+    push();
+    blendMode(ADD); // Makes it brighter when overlapping
+    drawOscilloscopePattern(centerX, centerY, centralVisualScale);
+    pop();
+    drawOscilloscopePatternToBuffer(traceBuffer, centerX, centerY, centralVisualScale);
+  }
+}
     
     // Only update audio once per frame, using combined data from all people
     if (i === poses.length - 1) updateAudioFilters();
@@ -3195,7 +3189,7 @@ calculateBlobTracking(pose);
     if (connections && pose.keypoints) {
       push();
       scale(-1, 1);
-      stroke(255, 120);
+      stroke(255, 180);
       strokeWeight(1.5);
       
       for (let j = 0; j < connections.length; j++) {
@@ -3378,7 +3372,7 @@ calculateBlobTracking(pose);
         rightHandY = rightHandSmooth.y;
       }
       
-      // Connection between hands uses sparse lines visual
+// Connection between hands uses sparse lines visual
       if (leftHandValid && rightHandValid) {
         const distance = dist(leftHandX, leftHandY, rightHandX, rightHandY);
         
@@ -3403,20 +3397,22 @@ calculateBlobTracking(pose);
       if (rightHandValid) {
         drawHandHeightLines(rightHandX, rightHandY, handHeightSmooth);
       }
-    }
+      
+      // Draw New Jeans pose flash effect for this person
+      if (newJeansPoseActive || millis() - newJeansPoseFlashTime < 500) {
+        push();
+        drawNewJeansPoseFlash();
+        pop();
+      }
+    } // This closes the pose loop
     
-    // Draw New Jeans pose flash effect
-    if (newJeansPoseActive || millis() - newJeansPoseFlashTime < 500) {
-      push();
-      drawNewJeansPoseFlash();
-      pop();
-    }
-    
-    // Draw blob tracking visualization
+    // Draw blob tracking visualization (outside pose loop)
     if (blobTrackingActive) {
       drawBlobTracking();
     }
-  }
+  } // This closes the main poses check
+
+
   
   // NEW: Draw state-specific overlays
   drawPoseEncouragement(); // State 2
