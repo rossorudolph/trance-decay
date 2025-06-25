@@ -263,6 +263,7 @@ function setup() {
   let canvasWidth = windowWidth;
   let canvasHeight = windowHeight;
   
+  sessionStartTime = millis();
   // if (canvasWidth / canvasHeight > 16/9) {
   //   canvasWidth = canvasHeight * (16/9);
   // } else {
@@ -403,12 +404,13 @@ function resetToBeginning() {
   }
   
   // Reset all states
+  let sessionStartTime = 0;
   currentState = 0;
   stateStartTime = millis();
   hasFullBodyDetection = false;
   fullBodyDetectedTime = 0;
-  motionEncouragementActive = false;
-  motionThresholdMet = false;
+  //motionEncouragementActive = false;
+  //motionThresholdMet = false;
   popHookActive = false;
   isBreakcoreActive = false;
   
@@ -2598,6 +2600,7 @@ function drawMotionEncouragement() {
       line(currentArrowX, currentY - 4, currentArrowX - 2, currentY - 1);
       line(currentArrowX, currentY - 4, currentArrowX + 2, currentY - 1);
     }
+        noStroke();
   }
   
   pop();
@@ -3136,51 +3139,47 @@ if (i === 0) checkFullBodyDetection(pose); // Only check state once
     // Calculate hip motion for body aura
     hipMotionAmount = calculateHipMotion(pose);
     
-    // Calculate New Jeans pose trigger for ANY person (only in state 2 and after 30 seconds)
-if (currentState === 2) {
-  const elapsed = millis() - stateStartTime;
-  if (elapsed >= 50000) { // Only allow pose trigger after 50 seconds
-    newJeansPoseActive = calculateNewJeansPose(pose);
-    if (newJeansPoseActive && !popHookActive) {
-      triggerEnhancedPopHook();
-      changeState(3);
+    // Calculate New Jeans pose trigger (only in state 2 and after 50 seconds from session start)
+    if (currentState === 2) {
+      const sessionElapsed = millis() - sessionStartTime; // Use session time, not state time
+      if (sessionElapsed >= 50000) { // Only allow pose trigger after 50 seconds from start
+        newJeansPoseActive = calculateNewJeansPose(pose);
+      }
     }
-  }
-}
     
     // Calculate blob tracking
 calculateBlobTracking(pose);
 
-// Draw individual oscilloscope for each person (using individual calculations)
-if (audioInitialized && isPlaying && samplesLoaded) {
-  const leftShoulder = pose.keypoints[11];
-  const rightShoulder = pose.keypoints[12];
-  if (leftShoulder && rightShoulder && leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
-    const centerX = (leftShoulder.x + rightShoulder.x) / 2;
-    const centerY = (leftShoulder.y + rightShoulder.y) / 2;
+// // Draw individual oscilloscope for each person (using individual calculations)
+// if (audioInitialized && isPlaying && samplesLoaded) {
+//   const leftShoulder = pose.keypoints[11];
+//   const rightShoulder = pose.keypoints[12];
+//   if (leftShoulder && rightShoulder && leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
+//     const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+//     const centerY = (leftShoulder.y + rightShoulder.y) / 2;
     
-    // Calculate individual arm stretch for this person
-    const leftWrist = pose.keypoints[15];
-    const rightWrist = pose.keypoints[16];
-    let individualArmStretch = 0;
-    if (leftWrist && rightWrist && leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
-      const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
-      const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
-      const avgDistance = (leftDistance + rightDistance) / 2;
-      const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
-      individualArmStretch = constrain(avgDistance / (shoulderWidth * 1.8), 0, 1);
-    }
+//     // Calculate individual arm stretch for this person
+//     const leftWrist = pose.keypoints[15];
+//     const rightWrist = pose.keypoints[16];
+//     let individualArmStretch = 0;
+//     if (leftWrist && rightWrist && leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
+//       const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
+//       const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
+//       const avgDistance = (leftDistance + rightDistance) / 2;
+//       const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
+//       individualArmStretch = constrain(avgDistance / (shoulderWidth * 1.8), 0, 1);
+//     }
     
-    let individualVisualScale = map(individualArmStretch, 0, 2, 0.8, 2.5);
-    let centralVisualScale = individualVisualScale * 2.5;
+//     let individualVisualScale = map(individualArmStretch, 0, 2, 0.8, 2.5);
+//     let centralVisualScale = individualVisualScale * 2.5;
     
-    push();
-    blendMode(ADD); // Makes it brighter when overlapping
-    drawOscilloscopePattern(centerX, centerY, centralVisualScale);
-    pop();
-    drawOscilloscopePatternToBuffer(traceBuffer, centerX, centerY, centralVisualScale);
-  }
-}
+//     push();
+//     blendMode(ADD); // Makes it brighter when overlapping
+//     drawOscilloscopePattern(centerX, centerY, centralVisualScale);
+//     pop();
+//     drawOscilloscopePatternToBuffer(traceBuffer, centerX, centerY, centralVisualScale);
+//   }
+// }
     
     // Only update audio once per frame, using combined data from all people
     if (i === poses.length - 1) updateAudioFilters();
@@ -3299,6 +3298,37 @@ if (audioInitialized && isPlaying && samplesLoaded) {
         // Draw to main canvas
         drawEnhancedSubtleHandPattern(leftHandSmooth.x, leftHandSmooth.y, handScale, false);
         
+        // Draw individual oscilloscope for each person (using individual calculations)
+        if (audioInitialized && isPlaying && samplesLoaded) {
+          const leftShoulder = pose.keypoints[11];
+          const rightShoulder = pose.keypoints[12];
+          if (leftShoulder && rightShoulder && leftShoulder.confidence > 0.5 && rightShoulder.confidence > 0.5) {
+            const centerX = (leftShoulder.x + rightShoulder.x) / 2;
+            const centerY = (leftShoulder.y + rightShoulder.y) / 2;
+            
+            // Calculate individual arm stretch for this person
+            const leftWrist = pose.keypoints[15];
+            const rightWrist = pose.keypoints[16];
+            let individualArmStretch = 0;
+            if (leftWrist && rightWrist && leftWrist.confidence > 0.5 && rightWrist.confidence > 0.5) {
+              const leftDistance = dist(centerX, centerY, leftWrist.x, leftWrist.y);
+              const rightDistance = dist(centerX, centerY, rightWrist.x, rightWrist.y);
+              const avgDistance = (leftDistance + rightDistance) / 2;
+              const shoulderWidth = dist(leftShoulder.x, leftShoulder.y, rightShoulder.x, rightShoulder.y);
+              individualArmStretch = constrain(avgDistance / (shoulderWidth * 1.8), 0, 1);
+            }
+            
+            let individualVisualScale = map(individualArmStretch, 0, 2, 0.8, 2.5);
+            let centralVisualScale = individualVisualScale * 2.5;
+            
+            push();
+            blendMode(ADD); // Makes it brighter when overlapping
+            drawOscilloscopePattern(centerX, centerY, centralVisualScale);
+            pop();
+            drawOscilloscopePatternToBuffer(traceBuffer, centerX, centerY, centralVisualScale);
+          }
+        }
+
         // Draw to hand trace buffer for longer trails
         handTraceBuffer.push();
         handTraceBuffer.translate(leftHandSmooth.x, leftHandSmooth.y);
