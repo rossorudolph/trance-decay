@@ -2706,13 +2706,13 @@ function drawMinimalMeters() {
   
   try {
     // Arm Stretch
-    stroke(255, 100, 100, 120);
+    stroke(255, 255, 255, 120);
     strokeWeight(1);
     noFill();
     rect(meterX, meterY, meterWidth, meterHeight);
     
     if (armStretchSmooth > 0.01) {
-      stroke(255, 100, 100, 200);
+      stroke(255, 255, 255, 200);
       strokeWeight(2);
       line(meterX + 1, meterY + 3, meterX + (meterWidth * constrain(armStretchSmooth, 0, 1)) - 1, meterY + 3);
     }
@@ -2723,13 +2723,13 @@ function drawMinimalMeters() {
     
     // Motion
     meterY += spacing;
-    stroke(100, 255, 100, 120);
+    stroke(255, 255, 255, 120);
     strokeWeight(1);
     noFill();
     rect(meterX, meterY, meterWidth, meterHeight);
     
     if (motionAverage > 0.01) {
-      stroke(100, 255, 100, 200);
+      stroke(255, 255, 255, 200);
       strokeWeight(2);
       line(meterX + 1, meterY + 3, meterX + (meterWidth * constrain(motionAverage, 0, 1)) - 1, meterY + 3);
     }
@@ -2740,13 +2740,13 @@ function drawMinimalMeters() {
     
     // Hip Motion
     meterY += spacing;
-    stroke(255, 150, 100, 120);
+    stroke(255, 255, 255, 120);
     strokeWeight(1);
     noFill();
     rect(meterX, meterY, meterWidth, meterHeight);
     
     if (hipMotionSmooth > 0.01) {
-      stroke(255, 150, 100, 200);
+      stroke(255, 255, 255, 200);
       strokeWeight(2);
       line(meterX + 1, meterY + 3, meterX + (meterWidth * constrain(hipMotionSmooth, 0, 1)) - 1, meterY + 3);
     }
@@ -2776,7 +2776,7 @@ function drawMinimalMeters() {
     // NEW: State System Status
     meterY += spacing;
     let stateColor = [100, 200, 255];
-    stroke(stateColor[0], stateColor[1], stateColor[2], 120);
+    stroke(255, 255, 255, 120);
     strokeWeight(1);
     noFill();
     rect(meterX, meterY, meterWidth, meterHeight);
@@ -2792,7 +2792,7 @@ function drawMinimalMeters() {
     }
     
     if (stateProgress > 0) {
-      stroke(stateColor[0], stateColor[1], stateColor[2], 200);
+      stroke(255, 255, 255, 200);
       strokeWeight(2);
       line(meterX + 1, meterY + 3, meterX + (meterWidth * stateProgress) - 1, meterY + 3);
     }
